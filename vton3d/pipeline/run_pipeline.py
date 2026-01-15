@@ -196,30 +196,19 @@ def run_step_qwen_clothing(cfg: dict):
 
 
 
-def run_pipeline(config_path: str | Path):
+def run_pipeline(config_path: str | Path, cfg: dict, base_scene_dir: Path):
     """
     Main pipeline function.
 
-    - loads YAML config
+
     - runs the VGGT reconstruction step
     - space for additional steps in the future
     """
     print(f"[Pipeline] Loading config: {config_path}")
-    cfg = load_config(config_path)
 
-    wandb.login()
+    pipeline_cfg = cfg.get("pipeline", {})
+    steps = pipeline_cfg.get("steps", ["vggt", "qwen"])
 
-    os.makedirs("logs", exist_ok=True)
-
-    wandb.init(
-        project="vton_pipeline",
-        name=cfg.get("wandb", {}).get("run_name", None),
-        config=cfg,
-        id=os.environ.get("WANDB_RUN_ID"),
-    )
-
-
-    base_scene_dir = Path(cfg["paths"]["scene_dir"]).expanduser().resolve()
     real_images_dir = base_scene_dir / "real" / "images"
 
     normalize_images_to_png(real_images_dir, remove_jpg=True)
@@ -230,9 +219,10 @@ def run_pipeline(config_path: str | Path):
         target_width=704,
     )
 
-    run_step_vggt_colmap(cfg)
-
-    run_step_qwen_clothing(cfg)
+    if "vggt" in steps:
+        run_step_vggt_colmap(cfg)
+    if "qwen" in steps:
+        run_step_qwen_clothing(cfg)
 
     print("[Pipeline] All defined steps completed.")
 
@@ -252,6 +242,29 @@ def parse_cli_args():
     return parser.parse_args()
 
 
-if __name__ == "__main__":
+#main
+def main():
     cli_args = parse_cli_args()
-    run_pipeline(cli_args.config)
+    cfg = load_config(cli_args.config)
+
+    wandb.login()
+
+    os.makedirs("logs", exist_ok=True)
+    wb = cfg.get("wandb", {})
+    wandb.init(
+        project=wb.get("project", "vton_pipeline"),
+        name=wb.get("wandb", {}).get("run_name", None),
+        entity=wb.get("entity", None),
+        config=cfg,
+        id=os.environ.get("WANDB_RUN_ID"),
+    )
+
+    base_scene_dir = Path(cfg["paths"]["scene_dir"]).expanduser().resolve()
+
+    run_pipeline(cli_args.config, cfg, base_scene_dir)
+
+    wandb.finish()
+
+
+if __name__ == "__main__":
+    main()

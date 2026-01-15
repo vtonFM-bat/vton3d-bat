@@ -1,4 +1,5 @@
-program: -m vton3d.pipeline.run_pipeline
+# configs/sweeps/vggt_sweep.yaml
+program: -m vton3d.pipeline.run_sweep
 method: bayes
 
 metric:
@@ -6,36 +7,20 @@ metric:
   goal: maximize
 
 parameters:
-  pipeline:
-    parameters:
-      steps:
-        value: ["vggt"]
-      preprocess:
-        parameters:
-          normalize_to_png:
-            value: false
-          resize:
-            parameters:
-              enabled:
-                value: false
-      input_mirror:
-        value: "symlink"
+  vggt.keep_top_percent:
+    min: 0.05
+    max: 0.50
 
-  vggt:
-    parameters:
-      use_ba:
-        values: [false]
-      keep_top_percent:
-        min: 0.05
-        max: 0.50
-      seed:
-        values: [0, 1, 2, 3, 4]
+  vggt.seed:
+    values: [0, 1, 2, 3, 4]
+
+  vggt.use_ba:
+    values: [false]
 
 command:
   - ${env}
   - ${interpreter}
   - -m
-  - vton3d.pipeline.run_pipeline
+  - vton3d.pipeline.run_sweep
   - --config
-  - configs/vton_pipeline_sweep.yaml
-  - --sweep
+  - configs/vton_pipeline_new.yaml

@@ -1,35 +1,10 @@
-run_name: "vton_flo_16"
-
-wandb:
-  project: "vton_pipeline"
-  entity: null
-  run_name: "${run_name}"
-  tags: ["vton3d", "vggt"]
-  mode: "online"
-
 paths:
-  # Dataset root
   scene_dir: "data/flo_16"
-
-  # Per-run workspace (important for sweeps/parallel runs!)
-  # is replaced in code with {run_id}
-  work_dir: "outputs/vton_runs/${run_name}/{run_id}"
+  runs_root: "data/flo_16/_runs"   # optional, empfehle ich
 
 pipeline:
-  steps: ["vggt", "qwen"] # gsplat in other env
-
-  # preprocess im dataset once and then deactivate
-  preprocess:
-    normalize_to_png: false
-    remove_jpg: false
-    resize:
-      enabled: false
-      target_height: 1248
-      target_width: 704
-
-  # Wie sollen Inputs ins work_dir kommen?
-  # symlink: schnell, aber dann darf preprocess NICHT in-place laufen!
-  input_mirror: "symlink"   # ["symlink", "copy"]
+  steps: ["vggt", "qwen"]
+  input_mirror: "copy"
 
 vggt:
   use_ba: false
@@ -45,16 +20,31 @@ vggt:
   seed: 42
 
 qwen:
+  #qwen model
   model_path: "ovedrive/Qwen-Image-Edit-2511-4bit"
   clothing_image: "data/clothing/upper/short/shirts/white_plants_shirt.jpg"
   prompt: "Replace the person's original clothing with the clothing image. Do not invent new features. Keep the person identical: pose, body, face, hair, and background must remain unchanged."
   negative_prompt: "change pose"
+  # Diffusion parameters
   true_cfg_scale: 4.0
   num_inference_steps: 20
   seed: 0
+  # File extensions for images in <scene_dir>/real/images/
   extensions: [".jpg", ".jpeg", ".png"]
 
 gsplat:
   test_every: 8
   data_factor: 1
-  eval_steps: [2000, 5000, 10000, 15000, 20000, 25000, 30000]
+  eval_steps:
+    - 2000
+    - 5000
+    - 10000
+    - 15000
+    - 20000
+    - 25000
+    - 30000
+
+wandb:
+  project: "vton_pipeline"
+  run_name: "vton_flo_16_sweep"
+  mode: "online"
