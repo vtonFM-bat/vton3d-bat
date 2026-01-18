@@ -50,7 +50,7 @@ def prepare_workdir(cfg: dict, run: wandb.sdk.wandb_run.Run) -> Path:
     scene_dir = Path(cfg["paths"]["scene_dir"]).expanduser().resolve()
 
     # default work-root: <scene_dir>/runs/<run_name>/<wandb_id>
-    run_name = cfg.get("run_name", "run")
+    run_name = cfg["wandb"].get("run_name", "run")
     work_root = Path(cfg["paths"].get("runs_root", scene_dir / "runs")).expanduser().resolve()
     work_dir = work_root / run_name / run.id
     work_dir.mkdir(parents=True, exist_ok=True)

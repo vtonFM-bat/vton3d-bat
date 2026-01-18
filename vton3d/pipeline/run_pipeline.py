@@ -196,16 +196,14 @@ def run_step_qwen_clothing(cfg: dict):
 
 
 
-def run_pipeline(config_path: str | Path, cfg: dict, base_scene_dir: Path):
+def run_pipeline(cfg: dict, base_scene_dir: Path):
     """
     Main pipeline function.
 
-
+    - runs image preprocessing (normalize to PNG, resize)
     - runs the VGGT reconstruction step
-    - space for additional steps in the future
+    - runs the Qwen clothing edit step
     """
-    print(f"[Pipeline] Loading config: {config_path}")
-
     pipeline_cfg = cfg.get("pipeline", {})
     steps = pipeline_cfg.get("steps", ["vggt", "qwen"])
 
@@ -246,6 +244,7 @@ def parse_cli_args():
 def main():
     cli_args = parse_cli_args()
     cfg = load_config(cli_args.config)
+    print(f"[Pipeline] Loading config: {cli_args.config}")
 
     wandb.login()
 
@@ -261,7 +260,7 @@ def main():
 
     base_scene_dir = Path(cfg["paths"]["scene_dir"]).expanduser().resolve()
 
-    run_pipeline(cli_args.config, cfg, base_scene_dir)
+    run_pipeline(cfg, base_scene_dir)
 
     wandb.finish()
 

@@ -1,6 +1,11 @@
 paths:
-  scene_dir: "data/flo_16"
-  runs_root: "data/flo_16/_runs"   # optional, empfehle ich
+  scene_dir: "data/train/florian/florian_16"
+  runs_root: "data/train/florian/florian_16/_runs"   # optional
+
+wandb:
+  project: "vton_pipeline"
+  run_name: "vton_florian_test_sweep"
+  mode: "online"
 
 pipeline:
   steps: ["vggt", "qwen"]
@@ -44,7 +49,3 @@ gsplat:
     - 25000
     - 30000
 
-wandb:
-  project: "vton_pipeline"
-  run_name: "vton_flo_16_sweep"
-  mode: "online"
