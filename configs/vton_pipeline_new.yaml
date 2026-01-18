@@ -4,12 +4,23 @@ paths:
 
 wandb:
   project: "vton_pipeline"
-  run_name: "vton_florian_test_sweep"
+  run_name: "vton_florian_16_sweep"
   mode: "online"
 
 pipeline:
-  steps: ["vggt", "qwen"]
+  steps: ["extract_frames", "vggt", "qwen"]
   input_mirror: "copy"
+
+extract_frames:
+  videos_dir: "data/train/florian/video"
+  video_name: "florian_shirt.MOV"        # optional: if not specified, process first video in videos_dir
+  num_frames: 6
+  start: 0
+  end: null
+  ext: "png"
+  rotate: 90
+  overwrite: true
+  clear_output_dir: true
 
 vggt:
   use_ba: false
