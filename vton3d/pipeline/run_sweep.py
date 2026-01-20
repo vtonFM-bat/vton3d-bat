@@ -64,6 +64,7 @@ def prepare_workdir(cfg: dict, run: wandb.sdk.wandb_run.Run) -> Path:
     # mirror input images
     mirror = cfg.get("pipeline", {}).get("input_mirror", "symlink")
     src = scene_dir / "real" / "images"
+    src.parent.mkdir(parents=True, exist_ok=True)
     dst = work_dir / "real" / "images"
     dst.parent.mkdir(parents=True, exist_ok=True)
 
