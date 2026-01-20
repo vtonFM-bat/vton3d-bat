@@ -51,9 +51,8 @@ def prepare_workdir(cfg: dict, run: wandb.sdk.wandb_run.Run) -> Path:
     num_frames = cfg.get("extract_frames", {}).get("num_frames", None)
     if num_frames:
         scene_dir = (base / f"{base.name}_{num_frames}").resolve()
-        scene_dir.mkdir(parents=True, exist_ok=True)
     else:
-        scene_dir = Path(cfg["paths"]["scene_dir"]).expanduser().resolve()
+        scene_dir = base.resolve()
 
     # default work-root: <scene_dir>/runs/<run_name>/<wandb_id>
     run_name = cfg["wandb"].get("run_name", "run")
@@ -64,7 +63,7 @@ def prepare_workdir(cfg: dict, run: wandb.sdk.wandb_run.Run) -> Path:
     # mirror input images
     mirror = cfg.get("pipeline", {}).get("input_mirror", "symlink")
     src = scene_dir / "real" / "images"
-    src.parent.mkdir(parents=True, exist_ok=True)
+    src.mkdir(parents=True, exist_ok=True)
     dst = work_dir / "real" / "images"
     dst.parent.mkdir(parents=True, exist_ok=True)
 
