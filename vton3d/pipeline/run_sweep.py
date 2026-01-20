@@ -12,7 +12,7 @@ import wandb
 from vton3d.pipeline.run_pipeline import load_config, parse_cli_args, run_pipeline
 
 
-KNOWN_SECTIONS = {"paths", "pipeline", "vggt", "qwen", "gsplat", "wandb"}
+KNOWN_SECTIONS = {"paths", "pipeline", "frame_extraction", "vggt", "qwen", "gsplat", "wandb"}
 
 
 def _set_by_path(d: dict, path: list[str], value: Any):
@@ -47,11 +47,17 @@ def apply_dot_overrides(cfg: dict, wb_config: dict) -> dict:
 
 
 def prepare_workdir(cfg: dict, run: wandb.sdk.wandb_run.Run) -> Path:
-    scene_dir = Path(cfg["paths"]["scene_dir"]).expanduser().resolve()
+    base = Path(cfg["paths"]["scene_dir"]).expanduser()
+    num_frames = cfg.get("extract_frames", {}).get("num_frames", None)
+    if num_frames:
+        scene_dir = (base / f"{base.name}_{num_frames}").resolve()
+        scene_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        scene_dir = Path(cfg["paths"]["scene_dir"]).expanduser().resolve()
 
     # default work-root: <scene_dir>/runs/<run_name>/<wandb_id>
     run_name = cfg["wandb"].get("run_name", "run")
-    work_root = Path(cfg["paths"].get("runs_root", scene_dir / "runs")).expanduser().resolve()
+    work_root = Path(cfg["paths"].get("runs_root", scene_dir / "sweep_runs")).expanduser().resolve()
     work_dir = work_root / run_name / run.id
     work_dir.mkdir(parents=True, exist_ok=True)
 

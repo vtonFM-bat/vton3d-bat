@@ -1,6 +1,6 @@
 paths:
   scene_dir: "data/train/florian/"
-  runs_root: "data/train/florian/florian_/_runs"   # optional
+  runs_root: "data/train/florian/sweep_runs"   # optional
 
 wandb:
   project: "vton_pipeline"
