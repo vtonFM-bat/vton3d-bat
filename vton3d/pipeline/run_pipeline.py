@@ -25,7 +25,11 @@ import sys
 import wandb
 
 
-
+from vton3d.utils.extract_frames import (
+    list_videos,
+    ExtractFramesConfig,
+    extract_frames_to_scene_dir
+)
 from vton3d.vggt.run_vggt import vggt2colmap
 from vton3d.qwen.run_qwen import run_qwen_from_config_dict
 from argparse import Namespace
@@ -92,6 +96,7 @@ def load_config(config_path: str | Path) -> dict:
         cfg = yaml.safe_load(f)
     return cfg
 
+
 def copy_colmap_sparse(real_scene_dir: Path, qwen_scene_dir: Path):
     """
     Copy COLMAP sparse reconstruction from real -> qwen.
@@ -142,14 +147,72 @@ def build_vggt_args_from_config(cfg: dict) -> Namespace:
 
 
 # pipeline steps
+def run_step_extract_frames(cfg: dict, base_scene_dir: Path):
+    """
+    first pipeline step:
+    - extract frames from input video
+    """
+
+    ef_cfg = cfg.get("extract_frames", {}) or {}
+    num_frames = int(ef_cfg.get("num_frames", 0))
+
+    scene_dir = base_scene_dir / f"{base_scene_dir.name}_{num_frames}"
+
+
+    base_scene_dir = Path(cfg["paths"]["scene_dir"]).expanduser().resolve()
+    videos_dir = Path(ef_cfg.get("videos_dir", "video")).expanduser()
+    if not videos_dir.is_absolute():
+        videos_dir = base_scene_dir / videos_dir
+    videos_dir = videos_dir.resolve()
+
+    video_name = ef_cfg.get("video_name", None)
+
+    if video_name:
+        video_path = (videos_dir / video_name).expanduser().resolve()
+    else:
+        videos = list_videos(videos_dir)
+        if not videos:
+            raise FileNotFoundError(f"No videos found in {videos_dir}")
+        video_path = videos[0]
+
+    print("=== [Step 1] Extract Frames ===")
+    print(f"  -> Video: {video_path}")
+    print(f"  -> Base scene_dir: {base_scene_dir}")
+    print(f"  -> Frames: {num_frames}")
+
+    scene_dir.mkdir(parents=True, exist_ok=True)
+
+    ef = ExtractFramesConfig(
+        num_frames=num_frames,
+        start=int(ef_cfg.get("start", 0)),
+        end=ef_cfg.get("end", None),
+        ext=str(ef_cfg.get("ext", "png")),
+        overwrite=bool(ef_cfg.get("overwrite", False)),
+        rotate=int(ef_cfg.get("rotate", 0)),
+        prefix=ef_cfg.get("prefix", None),
+        clear_output_dir=bool(ef_cfg.get("clear_output_dir", False)),
+    )
+
+    res = extract_frames_to_scene_dir(video_path=video_path, scene_dir=scene_dir, cfg=ef)
+    print(f" -> Saved {res.saved_frames} frames to {res.out_images_dir}")
+
+    print("=== [Step Extract Frames] Done ===\n")
+
+    # Update cfg paths to point to the new scene_dir
+    cfg["paths"]["scene_dir"] = str(scene_dir)
+    if "runs_root" in cfg["paths"]:
+        cfg["paths"]["runs_root"] = str(scene_dir / "_runs")
+
+    return scene_dir
+
 
 def run_step_vggt_colmap(cfg: dict):
     """
-    First pipeline step:
+    Second pipeline step:
     - prepare VGGT arguments
     - call vggt_colmap.demo_fn()
     """
-    print("=== [Step 1] VGGT + COLMAP Reconstruction ===")
+    print("=== [Step 2] VGGT + COLMAP Reconstruction ===")
 
     vggt_args = build_vggt_args_from_config(cfg)
 
@@ -164,11 +227,11 @@ def run_step_vggt_colmap(cfg: dict):
 
 def run_step_qwen_clothing(cfg: dict):
     """
-    Second pipeline step:
+    Third pipeline step:
     run the Qwen clothing edit batch and store outputs in <scene_dir>/qwen/images.
     Qwen uses input images from <scene_dir>/real/images.
     """
-    print("=== [Step 2] Qwen VTON edit ===")
+    print("=== [Step 3] Qwen VTON edit ===")
 
     base_scene_dir = Path(cfg["paths"]["scene_dir"])
 
@@ -196,30 +259,21 @@ def run_step_qwen_clothing(cfg: dict):
 
 
 
-def run_pipeline(config_path: str | Path):
+def run_pipeline(cfg: dict, base_scene_dir: Path):
     """
     Main pipeline function.
 
-    - loads YAML config
+    - runs image preprocessing (normalize to PNG, resize)
     - runs the VGGT reconstruction step
-    - space for additional steps in the future
+    - runs the Qwen clothing edit step
     """
-    print(f"[Pipeline] Loading config: {config_path}")
-    cfg = load_config(config_path)
+    pipeline_cfg = cfg.get("pipeline", {})
+    steps_cfg = pipeline_cfg.get("steps", None)
 
-    wandb.login()
-
-    os.makedirs("logs", exist_ok=True)
-
-    wandb.init(
-        project="vton_pipeline",
-        name=cfg.get("wandb", {}).get("run_name", None),
-        config=cfg,
-        id=os.environ.get("WANDB_RUN_ID"),
-    )
+    if steps_cfg["extract_frames"] is True:
+        base_scene_dir = run_step_extract_frames(cfg, base_scene_dir)
 
 
-    base_scene_dir = Path(cfg["paths"]["scene_dir"]).expanduser().resolve()
     real_images_dir = base_scene_dir / "real" / "images"
 
     normalize_images_to_png(real_images_dir, remove_jpg=True)
@@ -230,9 +284,10 @@ def run_pipeline(config_path: str | Path):
         target_width=704,
     )
 
-    run_step_vggt_colmap(cfg)
-
-    run_step_qwen_clothing(cfg)
+    if steps_cfg["vggt"] is True:
+        run_step_vggt_colmap(cfg)
+    if steps_cfg["qwen"] is True:
+        run_step_qwen_clothing(cfg)
 
     print("[Pipeline] All defined steps completed.")
 
@@ -252,6 +307,30 @@ def parse_cli_args():
     return parser.parse_args()
 
 
-if __name__ == "__main__":
+#main
+def main():
     cli_args = parse_cli_args()
-    run_pipeline(cli_args.config)
+    cfg = load_config(cli_args.config)
+    print(f"[Pipeline] Loading config: {cli_args.config}")
+
+    wandb.login()
+
+    os.makedirs("logs", exist_ok=True)
+    wb = cfg.get("wandb", {})
+    wandb.init(
+        project=wb.get("project", "vton_pipeline"),
+        name=wb.get("run_name", None),
+        entity=wb.get("entity", None),
+        config=cfg,
+        id=os.environ.get("WANDB_RUN_ID"),
+    )
+
+    base_scene_dir = Path(cfg["paths"]["scene_dir"]).expanduser().resolve()
+
+    run_pipeline(cfg, base_scene_dir)
+
+    wandb.finish()
+
+
+if __name__ == "__main__":
+    main()

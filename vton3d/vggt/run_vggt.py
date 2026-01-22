@@ -147,6 +147,13 @@ def run_vggt_eval(real_root: str | Path, prefix: str = "vggt"):
     images_by_name = {im.name: im for im in rec.images.values()}
 
     image_index = 0
+
+    # accumulators for sweep-friendly scalar metrics
+    coverages = []
+    mses = []
+    psnrs = []
+    behind_ratios = []
+
     for name in ordered_names:
         im = images_by_name.get(name)
         if im is None:
@@ -190,14 +197,20 @@ def run_vggt_eval(real_root: str | Path, prefix: str = "vggt"):
 
         image_index += 1
 
+        # keep per-image metrics
+        cov = float(m["coverage"])
+        mse = float(m["mse"])
+        psnr = float(m["psnr"])
+        br = float(behind_ratio)
+
         log_dict = {
             f"{prefix}/render": wandb.Image(rendered, caption=f"{Path(name).stem}_render"),
             f"{prefix}/overlay": wandb.Image(overlay, caption=f"{Path(name).stem}_overlay"),
             f"{prefix}/diff_heat": wandb.Image(diff_heat_rgb, caption=f"{Path(name).stem}_diff_heat"),
-            f"{prefix}/coverage": float(m["coverage"]),
-            f"{prefix}/mse": float(m["mse"]),
-            f"{prefix}/psnr": float(m["psnr"]),
-            f"{prefix}/behind_ratio": float(behind_ratio),
+            f"{prefix}/coverage": cov,
+            f"{prefix}/mse": mse,
+            f"{prefix}/psnr": psnr,
+            f"{prefix}/behind_ratio": br,
             f"{prefix}/W": int(W),
             f"{prefix}/H": int(H),
             f"{prefix}/num_points": int(Xw.shape[0]),
@@ -205,14 +218,42 @@ def run_vggt_eval(real_root: str | Path, prefix: str = "vggt"):
 
         wandb.log(log_dict, step=image_index)
 
+        # store for aggregation
+        coverages.append(cov)
+        mses.append(mse)
+        psnrs.append(psnr)
+        behind_ratios.append(br)
 
     if image_index == 0:
         print("[VGGT EVAL][WARN] No images evaluated (all skipped?)")
         return False
 
+    # aggregated metrics for sweeps(single scalar objective)
+    psnrs_np = np.asarray(psnrs, dtype=np.float64)
+    cover_np = np.asarray(coverages, dtype=np.float64)
+    mse_np = np.asarray(mses, dtype=np.float64)
+    behind_np = np.asarray(behind_ratios, dtype=np.float64)
+
+    summary = {
+        f"{prefix}/num_eval_images": int(image_index),
+
+        # sweep objectives:
+        f"{prefix}/psnr_mean": float(psnrs_np.mean()),
+        f"{prefix}/psnr_median": float(np.median(psnrs_np)),
+        f"{prefix}/psnr_std": float(psnrs_np.std()),
+        f"{prefix}/mse_mean": float(mse_np.mean()),
+        f"{prefix}/coverage_mean": float(cover_np.mean()),
+        f"{prefix}/behind_ratio_mean": float(behind_np.mean()),
+        f"{prefix}/num_points": int(Xw.shape[0]),
+    }
+
+    # final run-level metrics
+    wandb.log(summary)
+    # push into run summary (very sweep-friendly)
+    for k, v in summary.items():
+        wandb.run.summary[k] = v
+
     return True
-
-
 
 
 def vggt2colmap(args):

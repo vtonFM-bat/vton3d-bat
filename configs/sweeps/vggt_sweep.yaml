@@ -1,0 +1,26 @@
+# configs/sweeps/vggt_sweep.yaml
+program: -m vton3d.pipeline.run_sweep
+method: bayes
+
+metric:
+  name: vggt/psnr_mean
+  goal: maximize
+
+parameters:
+  vggt.keep_top_percent:
+    min: 0.05
+    max: 0.50
+
+  vggt.seed:
+    values: [0, 1, 2, 3, 4]
+
+  vggt.use_ba:
+    values: [false]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - -m
+  - vton3d.pipeline.run_sweep
+  - --config
+  - configs/vton_pipeline.yaml

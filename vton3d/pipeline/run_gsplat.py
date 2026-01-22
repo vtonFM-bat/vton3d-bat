@@ -55,8 +55,14 @@ def run_step_gsplat(cfg: dict) -> None:
     gsplat_repo = project_root / "gsplat"
 
     base_scene_dir = Path(cfg["paths"]["scene_dir"])
-    data_dir = Path("..") / base_scene_dir / "qwen"
-    result_dir = Path("..") / base_scene_dir / "results" / "qwen_gsplat"
+
+    ef_cfg = cfg.get("extract_frames", {}) or {}
+    num_frames = int(ef_cfg.get("num_frames", 0))
+
+    scene_dir = base_scene_dir / f"{base_scene_dir.name}_{num_frames}"
+
+    data_dir = Path("..") / scene_dir / "qwen"
+    result_dir = Path("..") / scene_dir / "results" / "qwen_gsplat"
 
     cmd = [
         sys.executable,
