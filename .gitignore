@@ -3,7 +3,7 @@
 *.eggs/
 build/
 dist/
-
+data/
 *.pyc
 logs/
 .venv/
