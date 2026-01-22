@@ -23,4 +23,4 @@ command:
   - -m
   - vton3d.pipeline.run_sweep
   - --config
-  - configs/vton_pipeline_new.yaml
+  - configs/vton_pipeline.yaml

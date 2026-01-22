@@ -1,15 +1,29 @@
-run_name: "vton_flo_16"
-
 paths:
-  # Base path of your scene
-  # VGGT will use: <scene_dir>/real/images/
-  # Qwen will use: <scene_dir>/real/images/
-  # Gsplat will use: <scene_dir>/qwen/images/
-  scene_dir: "data/flo_16"
+  scene_dir: "data/train/florian/"
+  runs_root: "data/train/florian/sweep_runs"   # optional
+
+wandb:
+  project: "vton_pipeline"
+  run_name: "vton_florian_16"
+  mode: "online"
+
+pipeline:
+  steps: ["extract_frames", "vggt", "qwen"]
+  input_mirror: "copy"
+
+extract_frames:
+  videos_dir: "data/train/florian/video"
+  video_name: "florian_shirt.MOV"        # optional: if not specified, process first video in videos_dir
+  num_frames: 6
+  start: 0
+  end: null
+  ext: "png"
+  rotate: 90
+  overwrite: true
+  clear_output_dir: true
 
 vggt:
   use_ba: false
-  # VGGT reconstruction parameters
   max_reproj_error: 8.0
   shared_camera: false
   camera_type: "SIMPLE_PINHOLE"
@@ -45,3 +59,4 @@ gsplat:
     - 20000
     - 25000
     - 30000
+
