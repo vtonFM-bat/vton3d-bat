@@ -23,7 +23,8 @@ import subprocess
 import shutil
 import sys
 import wandb
-
+import cv2
+import numpy as np
 
 from vton3d.utils.extract_frames import (
     list_videos,
@@ -302,7 +303,7 @@ def run_step_optical_flow_alignment(cfg: dict):
     qwen_images = sorted([p for p in qwen_dir.iterdir() if p.suffix.lower() == ".png"])
     if not qwen_images:
         print(f"  -> No PNGs found in {qwen_dir}. Nothing to do.")
-        print("=== [Step 4] Done ===\n")
+        print("=== [Step Optical Flow] Done ===\n")
         return
 
     aligned_count = 0
@@ -322,24 +323,41 @@ def run_step_optical_flow_alignment(cfg: dict):
             debug_dir = debug_root / qwen_path.stem
 
         try:
-            aligner.run_from_paths(
+            result = aligner.run_from_paths(
                 src_path=qwen_path,
                 tgt_path=real_path,
                 output_path=out_path,
                 debug_dir=debug_dir,
             )
             aligned_count += 1
+
+            aligned_bgr = cv2.imread(str(out_path))
+            if aligned_bgr is None:
+                raise RuntimeError(f"Could not read aligned image after write: {out_path}")
+            aligned_rgb = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2RGB)
+
+            mask = result["mask_ignore"]
+            mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
+
+            flow = result["flow"]
+            mag = np.linalg.norm(flow, axis=2)
+            mean_mag = float(mag.mean())
+
+            mag_img = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            mag_rgb = cv2.cvtColor(mag_img, cv2.COLOR_GRAY2RGB)
+
+            wandb.log({
+                "opticalflow/aligned": wandb.Image(aligned_rgb, caption=out_path.name),
+                "opticalflow/mask": wandb.Image(mask_rgb, caption=f"{out_path.stem}_mask"),
+                "opticalflow/flow_map": wandb.Image(mag_rgb, caption=f"{out_path.stem}_flow_mag"),
+                "opticalflow/mean_flow_magnitude": mean_mag,
+            })
+
         except Exception as e:
             failed += 1
             print(f"  [FAILED] {qwen_path.name}: {e}")
 
-    print(f"  -> Aligned & overwrote: {aligned_count}")
-    if skipped_missing_real:
-        print(f"  -> Skipped (no matching real): {skipped_missing_real}")
-    if failed:
-        print(f"  -> Failed: {failed}")
-
-    print("=== [Step 4] Done ===\n")
+    print("=== [Step Optical Flow] Done ===\n")
 
 
 def run_pipeline(cfg: dict, base_scene_dir: Path):
