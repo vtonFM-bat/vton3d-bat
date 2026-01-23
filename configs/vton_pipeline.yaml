@@ -42,7 +42,7 @@ vggt:
 qwen:
   #qwen model
   model_path: "ovedrive/Qwen-Image-Edit-2511-4bit"
-  clothing_image: "data/clothing/upper/short/shirts/white_plants_shirt.jpg"
+  clothing_image: "data/clothing/train/upper/short/shirts/white_plants_shirt.jpg"
   prompt: "Replace the person's original clothing with the clothing image. Do not invent new features. Keep the person identical: pose, body, face, hair, and background must remain unchanged."
   negative_prompt: "change pose"
   # Diffusion parameters
