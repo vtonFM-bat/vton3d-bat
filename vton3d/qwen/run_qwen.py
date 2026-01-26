@@ -209,7 +209,7 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
     pipeline = load_pipeline(model_path)
     base_generator = torch.Generator(device="cpu").manual_seed(seed)
     img_count = 0
-    wandb.log({"qwen/clothing_image": wandb.Image(clothing_image, caption=clothing_path.name)})
+    wandb.log({"qwen/clothing_image": wandb.Image(clothing_image, caption=clothing_path.name)}, step=0)
 
     estimator = SapiensSegmentation(
         SapiensSegmentationType.SEGMENTATION_1B,
@@ -269,7 +269,6 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
         )
 
         img_count += 1
-
         wandb.log({
             "qwen/input_image": wandb.Image(person_image, caption=img_path.name),
             "qwen/output_image": wandb.Image(output_image, caption=out_path.name),
@@ -283,7 +282,7 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
             ),
             f"qwen/face_sim_input_vs_output": face_sim,
 
-        })
+        }, step=img_count)
 
         clear_gpu_cache()
 
