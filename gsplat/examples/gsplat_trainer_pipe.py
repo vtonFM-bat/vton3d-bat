@@ -107,6 +107,8 @@ class Config:
     init_scale: float = 1.0
     # Weight for SSIM loss
     ssim_lambda: float = 0.2
+    # Size of Tiles
+    tile_size: int = 8
 
     # Near plane clipping distance
     near_plane: float = 0.01
@@ -527,6 +529,7 @@ class Runner:
             Ks=Ks,  # [C, 3, 3]
             width=width,
             height=height,
+            tile_size=self.cfg.tile_size,
             packed=self.cfg.packed,
             absgrad=(
                 self.cfg.strategy.absgrad
