@@ -1196,7 +1196,7 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     if world_rank == 0:
         run_id = os.environ.get("WANDB_RUN_ID")
         wandb.init(
-            project="vton_pipeline",
+            project=cfg["wandb"]["project"],
             id=run_id,
             resume="allow" if run_id is not None else None,
             config=vars(cfg),
