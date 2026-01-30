@@ -53,6 +53,9 @@ class Config:
     # Render trajectory path
     render_traj_path: str = "interp"
 
+    #wandb proejct
+    wandb_project: Optional[str] = "vton_pipeline"
+
     # Path to the Mip-NeRF 360 dataset
     data_dir: str = "data/360_v2/garden"
     # Downsample factor for the dataset
@@ -107,6 +110,8 @@ class Config:
     init_scale: float = 1.0
     # Weight for SSIM loss
     ssim_lambda: float = 0.2
+    # Size of Tiles
+    tile_size: int = 8
 
     # Near plane clipping distance
     near_plane: float = 0.01
@@ -527,6 +532,7 @@ class Runner:
             Ks=Ks,  # [C, 3, 3]
             width=width,
             height=height,
+            tile_size=self.cfg.tile_size,
             packed=self.cfg.packed,
             absgrad=(
                 self.cfg.strategy.absgrad
@@ -1193,7 +1199,7 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     if world_rank == 0:
         run_id = os.environ.get("WANDB_RUN_ID")
         wandb.init(
-            project="vton_pipeline",
+            project=cfg.wandb_project,
             id=run_id,
             resume="allow" if run_id is not None else None,
             config=vars(cfg),

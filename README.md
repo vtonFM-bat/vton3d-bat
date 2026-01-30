@@ -39,12 +39,25 @@ Then run the pipeline with:
 sbatch scicore_run_pipeline.sh
 
 ```
-```
 Create Sweep for eperiments with WandB
+```
 1. activate env
     - conda activate vton 
 2. Slurm-Terminal
    - wandb sweep configs/sweeps/vggt_sweep.yaml (copy outputpath sweepid)
 3. Run Sweep with:
    - sbatch run_pipeline_wandb_sweep.sh team_entity/vton_pipeline/sweepid
+```
+View checkpoints from Gaussian Splatting (Viser) from Scicore Cluster
+```
+(only for User with Scicore Account)
+
+1. connect to scicore
+2. open scicore_view_gsplat.sh
+    - change --ckpt param to your desired checkpoint path
+3. run the script with
+    - sbatch scicore_view_gsplat.sh
+4. open a local terminal
+    - ssh -N -L 8080:YourScicoreNodename:8080 YourUsername@login12.scicore.unibas.ch
+5. open your browser and go to http://localhost:8080
 ```

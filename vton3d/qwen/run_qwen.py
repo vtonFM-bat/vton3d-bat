@@ -104,6 +104,9 @@ def infer_eval_flag_from_clothing_path(clothing_path: Path) -> str:
     """
     parts = [p.lower() for p in clothing_path.parts]
 
+    if "dress" in parts:
+        return "dress"
+
     if "lower" in parts and "upper" in parts:
         # sehr selten, aber dann ist der Pfad ambig
         raise ValueError(
@@ -174,6 +177,8 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
     """
     Run the Qwen clothing edit batch using a config dictionary (e.g. cfg['qwen']).
     """
+    wandb.define_metric("qwen/*", step_metric="qwen/image_index")
+
     model_path = qwen_cfg.get("model_path", "ovedrive/Qwen-Image-Edit-2509-4bit")
     source_dir = Path(qwen_cfg["source_dir"])
     clothing_path = Path(qwen_cfg["clothing_image"])
@@ -218,7 +223,12 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
     )
 
     eval_flag = infer_eval_flag_from_clothing_path(clothing_path)
-    length_flag = infer_length_flag_from_clothing_path(clothing_path)
+
+    if eval_flag == "dress":
+        length_flag = None
+    else:
+        length_flag = infer_length_flag_from_clothing_path(clothing_path)
+
     print(f"[qwen] inferred eval_flag='{eval_flag}', length_flag='{length_flag}' from clothing_image='{clothing_path}'")
 
     for img_path in image_files:
@@ -269,7 +279,6 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
         )
 
         img_count += 1
-
         wandb.log({
             "qwen/input_image": wandb.Image(person_image, caption=img_path.name),
             "qwen/output_image": wandb.Image(output_image, caption=out_path.name),

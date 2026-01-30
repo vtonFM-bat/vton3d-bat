@@ -49,6 +49,13 @@ def run_step_gsplat(cfg: dict) -> None:
     test_every = gs_cfg.get("test_every", 8)
     data_factor = gs_cfg.get("data_factor", 1)
     eval_steps = gs_cfg.get("eval_steps", [7000, 30000])
+    tile_size = gs_cfg.get("tile_size", 16)
+    max_steps = gs_cfg.get("max_steps", 30000)
+    disable_video = gs_cfg.get("disable_video", False)
+    disable_viewer = gs_cfg.get("disable_viewer", True)
+
+    wandb_cfg = cfg.get("wandb", {})
+    wandb_project = wandb_cfg.get("project", "vton_pipeline")
 
     # Erwartet: cfg["paths"]["scene_dir"]
     project_root = Path(__file__).resolve().parents[2]
@@ -73,7 +80,15 @@ def run_step_gsplat(cfg: dict) -> None:
         "--result_dir", str(result_dir),
         "--test_every", str(test_every),
         "--eval_steps", *[str(s) for s in eval_steps],
+        "--tile_size", str(tile_size),
+        "--max_steps", str(max_steps),
+        "--wandb_project", str(wandb_project),
     ]
+
+    if disable_video:
+        cmd.append("--disable_video")
+    if disable_viewer:
+        cmd.append("--disable_viewer")
 
     print(f"  -> gsplat repo: {gsplat_repo}")
     print(f"  -> running: {' '.join(cmd)}")
@@ -97,7 +112,13 @@ def main() -> None:
     cfg_path = Path(args.config).expanduser().resolve()
     cfg = load_config(cfg_path)
 
-    run_step_gsplat(cfg)
+    steps = (cfg.get("pipeline", {}) or {}).get("steps", {}) or {}
+    run_gsplat = bool(steps.get("gsplat", False))
+
+    if run_gsplat:
+        run_step_gsplat(cfg)
+    else:
+        print("=== [Step 3] GSplat training skipped (pipeline.steps.gsplat = false) ===")
 
 
 if __name__ == "__main__":
