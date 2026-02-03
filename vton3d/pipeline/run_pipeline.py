@@ -25,6 +25,7 @@ import sys
 import wandb
 import cv2
 import numpy as np
+import matplotlib.cm as cm
 
 from vton3d.utils.extract_frames import (
     list_videos,
@@ -291,6 +292,7 @@ def run_step_optical_flow_alignment(cfg: dict):
         feather_sigma=float(mof_cfg_dict.get("feather_sigma", 7.0)),
         ecc_n_iter=int(mof_cfg_dict.get("ecc_n_iter", 400)),
         ecc_eps=float(mof_cfg_dict.get("ecc_eps", 1e-7)),
+        flag_source_path=cfg.get("qwen", {}).get("clothing_image", None),
     )
 
     aligner = MaskedOpticalFlow(mof_cfg)
@@ -337,6 +339,38 @@ def run_step_optical_flow_alignment(cfg: dict):
             aligned_rgb = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2RGB)
 
             mask = result["mask_ignore"]
+            real_bgr = cv2.imread(str(real_path))
+            aligned_bgr = cv2.imread(str(out_path))
+
+            real = real_bgr.astype(np.float32) / 255.0
+            aligned = aligned_bgr.astype(np.float32) / 255.0
+
+            mask_ignore = mask.astype(bool)
+            mask_include = ~mask_ignore
+
+            abs_diff = np.abs(real - aligned)
+            heatmap_gray = abs_diff.mean(axis=2)
+            heatmap_gray[mask_ignore] = 0.0
+
+            norm = heatmap_gray / (heatmap_gray.max() + 1e-8)
+
+            colormap = cm.get_cmap("Reds")
+            heatmap_rgb = (colormap(norm)[..., :3] * 255).astype(np.uint8)
+
+            diff = (real - aligned)
+            abs_diff = np.abs(diff)
+            heatmap_gray = abs_diff.mean(axis=2)
+            heatmap_gray[mask_ignore] = 0.0
+
+            norm = heatmap_gray / (heatmap_gray.max() + 1e-8)
+            colormap = cm.get_cmap("Reds")
+            heatmap_rgb = (colormap(norm)[..., :3] * 255).astype(np.uint8)
+
+            diff2 = diff ** 2
+            diff2_masked = diff2[mask_include]
+            mse = float(diff2_masked.mean()) if diff2_masked.size > 0 else float("nan")
+            psnr = float(10.0 * np.log10(1.0 / (mse + 1e-12))) if np.isfinite(mse) else float("nan")
+
             mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
 
             flow = result["flow"]
@@ -351,6 +385,9 @@ def run_step_optical_flow_alignment(cfg: dict):
                 "opticalflow/mask": wandb.Image(mask_rgb, caption=f"{out_path.stem}_mask"),
                 "opticalflow/flow_map": wandb.Image(mag_rgb, caption=f"{out_path.stem}_flow_mag"),
                 "opticalflow/mean_flow_magnitude": mean_mag,
+                "opticalflow/heatmap_diff": wandb.Image(heatmap_rgb, caption=f"{out_path.stem}_heatmap_diff"),
+                "opticalflow/mse_post_align": mse,
+                "opticalflow/psnr_post_align": psnr,
             })
 
         except Exception as e:

@@ -9,16 +9,43 @@ import numpy as np
 import torch
 
 
+def infer_eval_flag_from_path(p: Path) -> str:
+    parts = [x.lower() for x in p.parts]
+    if "dress" in parts:
+        return "dress"
+    if "lower" in parts and "upper" in parts:
+        raise ValueError(f"Ambiguous path contains both 'upper' and 'lower': {p}")
+    if "lower" in parts:
+        return "lower"
+    if "upper" in parts:
+        return "upper"
+    raise ValueError(f"Could not infer eval_flag from path (need 'upper'/'lower'/'dress'): {p}")
+
+def infer_length_flag_from_path(p: Path) -> str:
+    parts = [x.lower() for x in p.parts]
+    if "long" in parts and "short" in parts:
+        raise ValueError(f"Ambiguous path contains both 'long' and 'short': {p}")
+    if "long" in parts:
+        return "long"
+    if "short" in parts:
+        return "short"
+    raise ValueError(f"Could not infer length_flag from path (need 'long'/'short'): {p}")
+
+
 @dataclass
 class MaskedOpticalFlowConfig:
     target_h: int = 1248
     target_w: int = 704
 
-    #Sapiens
+    # Sapiens
     sapiens_repo: str | Path = "Sapiens-Pytorch-Inference"
     sapiens_variant: str = "SEGMENTATION_1B"
 
-    class_candidates: Dict[str, List[str]] = None
+    flag_source_path: Optional[str | Path] = None
+    clothing_flag: Optional[str] = None
+    length_flag: Optional[str] = None
+
+    class_candidates: Optional[Dict[str, List[str]]] = None
 
     mask_threshold: int = 127
     dilate_px: int = 10
@@ -35,14 +62,68 @@ class MaskedOpticalFlowConfig:
     remap_border_mode: int = cv2.BORDER_REFLECT
 
     def __post_init__(self):
-        if self.class_candidates is None:
-            self.class_candidates = {
-                "upper_clothing": ["Upper Clothing"],
-                "left_upper_arm": ["Left Upper Arm", "Upper Arm Left", "LeftUpperArm"],
-                "right_upper_arm": ["Right Upper Arm", "Upper Arm Right", "RightUpperArm"],
-                "left_lower_arm": ["Left Lower Arm", "Lower Arm Left", "LeftLowerArm"],
-                "right_lower_arm": ["Right Lower Arm", "Lower Arm Right", "RightLowerArm"],
-            }
+        if self.class_candidates is not None:
+            return
+
+        if self.clothing_flag is None:
+            if self.flag_source_path is None:
+                raise ValueError(
+                    "MaskedOpticalFlowConfig: flag_source_path is required (set qwen.clothing_image)."
+                )
+
+            else:
+                p = Path(self.flag_source_path)
+                self.clothing_flag = infer_eval_flag_from_path(p)
+                if self.clothing_flag == "dress":
+                    self.length_flag = None
+                else:
+                    if self.length_flag is None:
+                        self.length_flag = infer_length_flag_from_path(p)
+
+        flag = self.clothing_flag.lower()
+        if flag not in ("upper", "lower", "dress"):
+            raise ValueError(f"Invalid clothing_flag='{self.clothing_flag}', expected upper/lower/dress")
+
+        if self.length_flag is not None:
+            lf = self.length_flag.lower()
+            if lf not in ("short", "long"):
+                raise ValueError(f"Invalid length_flag='{self.length_flag}', expected short/long")
+
+        upper = ["Upper Clothing"]
+        lower = ["Lower Clothing"]
+
+        arms = {
+            "left_upper_arm": ["Left Upper Arm", "Upper Arm Left", "LeftUpperArm"],
+            "right_upper_arm": ["Right Upper Arm", "Upper Arm Right", "RightUpperArm"],
+            "left_lower_arm": ["Left Lower Arm", "Lower Arm Left", "LeftLowerArm"],
+            "right_lower_arm": ["Right Lower Arm", "Lower Arm Right", "RightLowerArm"],
+        }
+        legs = {
+            "left_upper_leg": ["Left Upper Leg", "Upper Leg Left", "LeftUpperLeg"],
+            "right_upper_leg": ["Right Upper Leg", "Upper Leg Right", "RightUpperLeg"],
+            "left_lower_leg": ["Left Lower Leg", "Lower Leg Left", "LeftLowerLeg"],
+            "right_lower_leg": ["Right Lower Leg", "Lower Leg Right", "RightLowerLeg"],
+        }
+
+        candidates: Dict[str, List[str]] = {}
+
+        if flag == "upper":
+            candidates["upper_clothing"] = upper
+            if (self.length_flag or "short").lower() == "long":
+                candidates.update(arms)
+
+        elif flag == "lower":
+            candidates["lower_clothing"] = lower
+            if (self.length_flag or "short").lower() == "long":
+                candidates.update(legs)
+
+        else:
+            candidates["upper_clothing"] = upper
+            candidates["lower_clothing"] = lower
+            candidates.update(arms)
+            candidates.update(legs)
+
+        self.class_candidates = candidates
 
 
 class MaskedOpticalFlow:
@@ -139,6 +220,7 @@ class MaskedOpticalFlow:
             target_ids.append(self._find_class_id_any(candidates, self._classes))
         self._target_ids = np.array(target_ids, dtype=np.int32)
 
+        print(f"[MaskedOpticalFlow] clothing_flag={self.cfg.clothing_flag}, length_flag={self.cfg.length_flag}")
         print("[MaskedOpticalFlow] Using class IDs:")
         for cid in self._target_ids:
             print(f"  - {cid:3d} | {self._classes[cid]}")
