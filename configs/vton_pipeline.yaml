@@ -3,7 +3,7 @@ paths:
   runs_root: "data/train/florian/sweep_runs"   # optional
 
 wandb:
-  project: "vton_pipeline"
+  project: "vton_optical_flow"
   run_name: "vton_florian_16"
   mode: "online"
 
@@ -20,7 +20,7 @@ pipeline:
 extract_frames:
   videos_dir: "video"
   video_name: "florian_shirt.MOV"        # optional: if not specified, process first video in videos_dir
-  num_frames: 6
+  num_frames: 30
   start: 0
   end: null
   ext: "png"
@@ -61,7 +61,7 @@ masked_optical_flow:
   sapiens_variant: "SEGMENTATION_1B"
   target_h: 1248
   target_w: 704
-  dilate_px: 10
+  dilate_px: 15
   feather_sigma: 7.0
   ecc_n_iter: 400
   ecc_eps: 1e-7
@@ -72,15 +72,26 @@ gsplat:
   test_every: 8
   data_factor: 1
   tile_size: 8
-  max_steps: 30_000
+  max_steps: 3_500
   disable_video: true
   disable_viewer: true
   eval_steps:
+    - 50
+    - 100
+    - 200
+    - 300
+    - 400
+    - 500
+    - 750
+    - 1000
+    - 1250
+    - 1500
+    - 1750
     - 2000
-    - 5000
-    - 10000
-    - 15000
-    - 20000
-    - 25000
-    - 30000
+    - 2250
+    - 2500
+    - 2750
+    - 3000
+    - 3250
+    - 3499
 

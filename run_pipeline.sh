@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH -p p4500
-#SBATCH --job-name=vton_pipeline
+#SBATCH -p H200
+#SBATCH --job-name=tests_qwen_params
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --time=2:00:00
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=46G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=74G
 
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 
@@ -24,7 +24,7 @@ export WANDB_RUN_ID="slurm-${SLURM_JOB_ID}"
 
 python -m vton3d.pipeline.run_pipeline --config "$CONFIG_PATH"
 
-deactivate
+conda deactivate
 
 module load anaconda
 
