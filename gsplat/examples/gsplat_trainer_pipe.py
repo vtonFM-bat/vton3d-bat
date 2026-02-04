@@ -545,6 +545,7 @@ class Runner:
             camera_model=self.cfg.camera_model,
             with_ut=self.cfg.with_ut,
             with_eval3d=self.cfg.with_eval3d,
+            backgrounds=torch.ones((Ks.shape[-3], 3), device=means.device),
             **kwargs,
         )
         if masks is not None:
