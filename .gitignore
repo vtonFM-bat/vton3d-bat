@@ -12,4 +12,4 @@ __pycache__/
 *.cpython-312.
 Sapiens-Pytorch-Inference/models/
 models/
-notebooks/.wandb_media_cache
+**/.wandb_media_cache/
