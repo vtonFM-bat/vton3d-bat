@@ -38,6 +38,9 @@ from vton3d.utils.masked_optical_flow import (
     MaskedOpticalFlowConfig,
 )
 
+from vton3d.utils.background_segmentation import BackgroundSegmentation, BackgroundSegmentationConfig
+
+
 from vton3d.vggt.run_vggt import vggt2colmap
 from vton3d.qwen.run_qwen import run_qwen_from_config_dict
 from argparse import Namespace
@@ -402,6 +405,44 @@ def run_step_optical_flow_alignment(cfg: dict):
     print("=== [Step Optical Flow] Done ===\n")
 
 
+def run_step_background_segmentation(cfg: dict):
+    print("=== Human segmentation (SAM3) + white background + save masks ===")
+
+    base_scene_dir = Path(cfg["paths"]["scene_dir"]).resolve()
+    qwen_images_dir = base_scene_dir / "qwen" / "images"
+
+    bs_cfg_dict = cfg.get("background_segmentation", {}) or {}
+    bs_cfg = BackgroundSegmentationConfig(
+        model_id=str(bs_cfg_dict.get("model_id", "facebook/sam3")),
+        prompt=str(bs_cfg_dict.get("prompt", "human")),
+        threshold=float(bs_cfg_dict.get("threshold", 0.5)),
+        mask_threshold=float(bs_cfg_dict.get("mask_threshold", 0.5)),
+        pick=str(bs_cfg_dict.get("pick", "union")),
+        overwrite=bool(bs_cfg_dict.get("overwrite", True)),
+        device=bs_cfg_dict.get("device", None),
+        masks_dir_name=str(bs_cfg_dict.get("masks_dir_name", "human_masks")),
+        mask_suffix=str(bs_cfg_dict.get("mask_suffix", "")),
+        wandb_log=bool(bs_cfg_dict.get("wandb_log", True)),
+        wandb_prefix=str(bs_cfg_dict.get("wandb_prefix", "bgseg")),
+        overlay_alpha=float(bs_cfg_dict.get("overlay_alpha", 0.45)),
+    )
+
+    seg = BackgroundSegmentation(bs_cfg)
+
+    import wandb
+    summary = seg.run_on_qwen_dir(
+        scene_dir=base_scene_dir,
+        qwen_images_dir=qwen_images_dir,
+        wandb_run=wandb.run,
+    )
+
+    print(
+        f"  -> Processed {summary['total']} | found: {summary['found']} | "
+        f"saved: {summary['saved']} | failures: {summary['failures']}"
+    )
+    print(f"  -> Masks saved to: {summary['masks_dir']}")
+    print("=== [Step Background Segmentation] Done ===\n")
+
 def run_pipeline(cfg: dict, base_scene_dir: Path):
     """
     Main pipeline function.
@@ -435,6 +476,9 @@ def run_pipeline(cfg: dict, base_scene_dir: Path):
 
     if steps_cfg["optical_flow"] is True:
         run_step_optical_flow_alignment(cfg)
+
+    if steps_cfg["background_segmentation"] is True:
+        run_step_background_segmentation(cfg)
 
     print("[Pipeline] All defined steps completed.")
 
