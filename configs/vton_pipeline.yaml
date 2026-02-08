@@ -3,17 +3,17 @@ paths:
   runs_root: "data/train/florian/sweep_runs"   # optional
 
 wandb:
-  project: "vton_optical_flow"
-  run_name: "vton_florian_16"
+  project: "vton_promtpt_engineering"
+  run_name: "vton_person_clothing"
   mode: "online"
 
 pipeline:
   steps:
     extract_frames: true
-    vggt: true
+    vggt: false
     qwen: true
-    optical_flow: true
-    gsplat: true
+    optical_flow: false
+    gsplat: false
   input_mirror: "copy"
 
 
