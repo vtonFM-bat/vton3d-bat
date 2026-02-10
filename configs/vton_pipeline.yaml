@@ -13,6 +13,7 @@ pipeline:
     vggt: true
     qwen: true
     optical_flow: true
+    background_segmentation: true
     gsplat: true
   input_mirror: "copy"
 
@@ -67,6 +68,17 @@ masked_optical_flow:
   ecc_eps: 1e-7
   # debug_dir: "_debug_mof"   #optional
 
+background_segmentation:
+  model_id: "facebook/sam3"
+  prompt: "human"
+  threshold: 0.5
+  mask_threshold: 0.5
+  pick: "largest"          # union, largest, best_score
+  masks_dir_name: "human_masks"
+  mask_suffix: "human_masks"        # optional
+  wandb_log: true
+  wandb_prefix: "human_seg"
+  overlay_alpha: 0.45
 
 gsplat:
   test_every: 8
