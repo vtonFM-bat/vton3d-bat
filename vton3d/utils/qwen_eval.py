@@ -228,8 +228,22 @@ def qwen_fashionclip_similarity_masked_clothing(
     def embed(pil_img: Image.Image) -> torch.Tensor:
         inputs = processor(images=pil_img, return_tensors="pt")
         inputs = {k: v.to(dev) for k, v in inputs.items()}
+
         with torch.inference_mode():
-            feats = model.get_image_features(pixel_values=inputs["pixel_values"])
+            out = model.get_image_features(pixel_values=inputs["pixel_values"])
+
+        if isinstance(out, torch.Tensor):
+            feats = out
+        elif hasattr(out, "image_embeds") and out.image_embeds is not None:
+            feats = out.image_embeds
+        elif hasattr(out, "pooler_output") and out.pooler_output is not None:
+            feats = out.pooler_output
+        elif hasattr(out, "last_hidden_state") and out.last_hidden_state is not None:
+            # CLS token fallback
+            feats = out.last_hidden_state[:, 0, :]
+        else:
+            raise RuntimeError(f"Unexpected output type from get_image_features: {type(out)}")
+
         feats = feats.float()
         feats = feats / (feats.norm(dim=-1, keepdim=True) + 1e-12)
         return feats.squeeze(0)

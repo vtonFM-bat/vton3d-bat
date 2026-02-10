@@ -13,3 +13,4 @@ __pycache__/
 Sapiens-Pytorch-Inference/models/
 models/
 **/.wandb_media_cache/
+**/wandb_media_cache/
