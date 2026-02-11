@@ -7,7 +7,15 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SAPIENS_REPO = REPO_ROOT / "Sapiens-Pytorch-Inference"
+sys.path.insert(0, str(SAPIENS_REPO))
 
+from sapiens_inference import (
+    SapiensConfig,
+    SapiensDepth,
+    SapiensDepthType,
+)
 
 class SapiensDepthMapBuilder:
     """
@@ -52,11 +60,6 @@ class SapiensDepthMapBuilder:
 
         sys.path.insert(0, str(self.sapiens_dir))
 
-        from sapiens_inference import (
-            SapiensConfig,
-            SapiensDepth,
-            SapiensDepthType,
-        )
 
         cfg = SapiensConfig()
         cfg.depth_type = SapiensDepthType.DEPTH_1B
