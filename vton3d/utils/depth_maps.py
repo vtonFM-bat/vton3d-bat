@@ -1,256 +1,157 @@
-import os
-import sys
 from pathlib import Path
-from typing import Iterable, Optional
-
+import sys
+import os
 import cv2
 import numpy as np
 import torch
 from PIL import Image
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SAPIENS_REPO = REPO_ROOT / "Sapiens-Pytorch-Inference"
-sys.path.insert(0, str(SAPIENS_REPO))
 
-from sapiens_inference import (
-    SapiensConfig,
-    SapiensDepth,
-    SapiensDepthType,
-)
 
-class SapiensDepthMapBuilder:
+class SapiensDepthGenerator:
     """
-    Build per-image depth maps using Sapiens depth inference and external human masks.
-
-    Inputs:
-        - RGB images under: data_dir/images (or a custom images_subdir)
-        - Human masks under: data_dir/human_mask
-          Mask file naming: <image_stem><human_mask_suffix>.png
-          Example: frame_0001 + human_masks + .png -> frame_0001human_masks.png
-
-    Outputs:
-        - Depth maps under: data_dir/depth_maps (or a custom out_subdir)
-        - Output filenames match the original RGB filenames (same stem and extension),
-          preserving subfolder structure.
-
-    Depth processing:
-        - Sapiens depth is min/max normalized to [0,1] per frame
-        - Background pixels (mask==False) are set to far depth (1.0)
-        - Optional inversion: depth <- 1-depth
-
-    Save format:
-        - save_mode="u16" writes 16-bit PNG (0..65535)
-        - save_mode="u8" writes 8-bit PNG (0..255)
+    Generates Sapiens depth maps using external foreground masks.
+    Output depth maps are directly compatible with scale-invariant log depth loss.
     """
 
-    def __init__(
-        self,
-        sapiens_dir: Path,
-        device: Optional[str] = None,
-    ) -> None:
-        self.sapiens_dir = Path(sapiens_dir)
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self._depth_predictor = None
-
-    def _ensure_predictor(self) -> None:
+    def __init__(self, repo_root: Path, device: str = None, depth_type: str = "DEPTH_1B"):
         """
-        Lazily initialize the Sapiens depth predictor.
+        repo_root: root directory that contains "Sapiens-Pytorch-Inference"
         """
-        if self._depth_predictor is not None:
-            return
 
-        sys.path.insert(0, str(self.sapiens_dir))
+        self.repo_root = Path(repo_root)
+        self.sapiens_repo = self.repo_root / "Sapiens-Pytorch-Inference"
 
+        if not self.sapiens_repo.exists():
+            raise FileNotFoundError(f"Sapiens repo not found: {self.sapiens_repo}")
+
+        sys.path.insert(0, str(self.sapiens_repo))
+
+        from sapiens_inference import (
+            SapiensDepth,
+            SapiensDepthType,
+            SapiensConfig,
+        )
+
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
 
         cfg = SapiensConfig()
-        cfg.depth_type = SapiensDepthType.DEPTH_1B
-        cfg.device = self.device
+        cfg.depth_type = getattr(SapiensDepthType, depth_type)
+        cfg.device = device
 
         orig_cwd = os.getcwd()
         try:
-            os.makedirs(self.sapiens_dir / "models", exist_ok=True)
-            os.chdir(str(self.sapiens_dir))
-            self._depth_predictor = SapiensDepth(cfg.depth_type, cfg.device, cfg.dtype)
+            os.chdir(self.sapiens_repo)
+            self.depth_model = SapiensDepth(cfg.depth_type, cfg.device, cfg.dtype)
         finally:
             os.chdir(orig_cwd)
 
-    @staticmethod
-    def _read_rgb_image(path: Path) -> np.ndarray:
-        """
-        Read an image as RGB uint8 array [H,W,3].
-        """
-        return np.array(Image.open(path).convert("RGB"))
+        self.device = device
+
+    def _load_image_bgr(self, path: Path):
+        pil = Image.open(path).convert("RGB")
+        rgb = np.array(pil)
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        return bgr
+
+    def _predict_depth(self, img_path: Path):
+        bgr = self._load_image_bgr(img_path)
+        H, W = bgr.shape[:2]
+
+        depth = self.depth_model(bgr)
+
+        if isinstance(depth, torch.Tensor):
+            depth = depth.squeeze().detach().cpu().numpy()
+        else:
+            depth = np.squeeze(depth)
+
+        if depth.shape != (H, W):
+            depth = cv2.resize(depth, (W, H), interpolation=cv2.INTER_LINEAR)
+
+        return depth.astype(np.float32)
 
     @staticmethod
-    def _load_mask(mask_path: Path) -> np.ndarray:
+    def _postprocess_for_si_loss(depth, mask, eps=1e-3):
         """
-        Load a human mask as boolean array [H,W] where white means human and black means background.
+        Makes depth compatible with scale-invariant log loss:
+        - background -> NaN
+        - remove non-finite
+        - ensure strictly positive
+        - median normalization (robust scaling)
         """
-        m = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-        if m is None:
-            raise FileNotFoundError(mask_path)
-        return m > 127
 
-    @staticmethod
-    def _normalize_depth(depth: np.ndarray, eps: float = 1e-8) -> np.ndarray:
-        """
-        Normalize a depth map to [0,1] using robust min/max normalization.
-        """
-        d = depth.astype(np.float32)
-        if not np.isfinite(d).any():
-            return np.ones_like(d, dtype=np.float32)
+        Z = depth.astype(np.float32)
 
-        dmin = np.nanmin(d)
-        dmax = np.nanmax(d)
+        # Remove invalid values
+        Z[~np.isfinite(Z)] = np.nan
 
-        if not np.isfinite(dmin) or not np.isfinite(dmax) or abs(dmax - dmin) < eps:
-            return np.ones_like(d, dtype=np.float32)
+        # Apply foreground mask (0 = background)
+        Z[mask == 0] = np.nan
 
-        out = (d - dmin) / (dmax - dmin + eps)
-        return np.clip(out, 0.0, 1.0)
+        valid = np.isfinite(Z)
+        if not valid.any():
+            return Z
 
-    def iter_image_paths(
+        # Shift if necessary to ensure positivity
+        zmin = np.nanmin(Z)
+        if zmin <= 0:
+            Z = Z - zmin + eps
+
+        Z[(np.isfinite(Z)) & (Z <= 0)] = eps
+
+        # Median scaling (important for stable training)
+        valid = np.isfinite(Z)
+        median = np.nanmedian(Z[valid])
+        if median > 0:
+            Z = Z / median
+
+        return Z.astype(np.float32)
+
+    def generate_depth_folder(
         self,
-        data_dir: Path,
-        images_subdir: str = "images",
-        exts: Iterable[str] = (".png", ".jpg", ".jpeg"),
-    ) -> list[Path]:
+        input_dir: str,
+        mask_dir: str,
+        output_dir: str,
+        image_exts=(".jpg", ".jpeg", ".png"),
+        mask_ext=".png",
+        overwrite=False,
+    ):
         """
-        Collect and return all image paths under data_dir/images_subdir with given extensions.
+        Generates depth maps for all images in input_dir.
+        Mask files must exist in mask_dir with identical relative paths.
         """
-        img_dir = Path(data_dir) / images_subdir
-        paths = [p for p in img_dir.rglob("*") if p.suffix.lower() in set(exts)]
-        paths.sort()
-        return paths
 
-    def build_for_dataset(
-        self,
-        data_dir: Path,
-        images_subdir: str = "images",
-        human_mask_subdir: str = "human_masks",
-        human_mask_suffix: str = "human_masks",
-        out_subdir: str = "depth_maps",
-        invert_depth: bool = False,
-        save_mode: str = "u16",
-        skip_existing: bool = True,
-        fail_on_missing_mask: bool = False,
-    ) -> None:
-        """
-        Build depth maps for all images in the dataset folder.
+        input_dir = Path(input_dir)
+        mask_dir = Path(mask_dir)
+        output_dir = Path(output_dir)
 
-        If skip_existing is True, existing outputs will not be recomputed.
-        If fail_on_missing_mask is True, missing masks raise an exception.
-        """
-        self._ensure_predictor()
+        images = [p for p in input_dir.rglob("*") if p.suffix.lower() in image_exts]
 
-        data_dir = Path(data_dir)
-        img_dir = data_dir / images_subdir
-        mask_dir = data_dir / human_mask_subdir
-        out_dir = data_dir / out_subdir
-        out_dir.mkdir(parents=True, exist_ok=True)
+        for img_path in images:
+            rel = img_path.relative_to(input_dir)
+            stem = rel.with_suffix("")
 
-        image_paths = self.iter_image_paths(data_dir=data_dir, images_subdir=images_subdir)
+            mask_path = mask_dir / (str(stem) + mask_ext)
+            out_path = output_dir / (str(stem) + ".npy")
 
-        for img_path in image_paths:
-            rel = img_path.relative_to(img_dir)
-            out_path = (out_dir / f"{img_path.stem}.png")
-
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-
-            if skip_existing and out_path.exists():
+            if out_path.exists() and not overwrite:
                 continue
-
-            base = img_path.stem
-            mask_path = mask_dir / f"{base}{human_mask_suffix}.png"
 
             if not mask_path.exists():
-                if fail_on_missing_mask:
-                    raise FileNotFoundError(mask_path)
-                continue
+                raise FileNotFoundError(f"Mask missing: {mask_path}")
 
-            rgb = self._read_rgb_image(img_path)
-            H, W = rgb.shape[:2]
-            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            depth_raw = self._predict_depth(img_path)
 
-            human_mask = self._load_mask(mask_path)
-            if human_mask.shape != (H, W):
-                human_mask = cv2.resize(
-                    human_mask.astype(np.uint8),
-                    (W, H),
-                    interpolation=cv2.INTER_NEAREST,
-                ).astype(bool)
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            if mask is None:
+                raise FileNotFoundError(f"Could not load mask: {mask_path}")
 
-            depth_raw = self._depth_predictor(bgr)
-            if isinstance(depth_raw, torch.Tensor):
-                depth_np = depth_raw.squeeze().detach().cpu().numpy()
-            else:
-                depth_np = np.squeeze(depth_raw)
+            if mask.shape != depth_raw.shape:
+                mask = cv2.resize(mask, depth_raw.shape[::-1], interpolation=cv2.INTER_NEAREST)
 
-            if depth_np.shape != (H, W):
-                depth_np = cv2.resize(depth_np, (W, H), interpolation=cv2.INTER_LINEAR)
+            mask = (mask > 127).astype(np.uint8)
 
-            depth_norm = self._normalize_depth(depth_np)
-            if invert_depth:
-                depth_norm = 1.0 - depth_norm
+            depth_processed = self._postprocess_for_si_loss(depth_raw, mask)
 
-            depth_bg_far = np.where(human_mask, depth_norm, 1.0)
-
-            if save_mode == "u16":
-                out_img = (depth_bg_far * 65535.0).astype(np.uint16)
-            elif save_mode == "u8":
-                out_img = (depth_bg_far * 255.0).astype(np.uint8)
-            else:
-                raise ValueError("save_mode must be 'u8' or 'u16'")
-
-            cv2.imwrite(str(out_path), out_img)
-
-    def build_one(
-        self,
-        image_path: Path,
-        mask_path: Path,
-        out_path: Path,
-        invert_depth: bool = False,
-        save_mode: str = "u16",
-    ) -> None:
-        """
-        Build a depth map for a single image using a provided mask path and output path.
-        """
-        self._ensure_predictor()
-
-        rgb = self._read_rgb_image(Path(image_path))
-        H, W = rgb.shape[:2]
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-
-        human_mask = self._load_mask(Path(mask_path))
-        if human_mask.shape != (H, W):
-            human_mask = cv2.resize(
-                human_mask.astype(np.uint8),
-                (W, H),
-                interpolation=cv2.INTER_NEAREST,
-            ).astype(bool)
-
-        depth_raw = self._depth_predictor(bgr)
-        if isinstance(depth_raw, torch.Tensor):
-            depth_np = depth_raw.squeeze().detach().cpu().numpy()
-        else:
-            depth_np = np.squeeze(depth_raw)
-
-        if depth_np.shape != (H, W):
-            depth_np = cv2.resize(depth_np, (W, H), interpolation=cv2.INTER_LINEAR)
-
-        depth_norm = self._normalize_depth(depth_np)
-        if invert_depth:
-            depth_norm = 1.0 - depth_norm
-
-        depth_bg_far = np.where(human_mask, depth_norm, 1.0)
-
-        out_path = Path(out_path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if save_mode == "u16":
-            out_img = (depth_bg_far * 65535.0).astype(np.uint16)
-        elif save_mode == "u8":
-            out_img = (depth_bg_far * 255.0).astype(np.uint8)
-        else:
-            raise ValueError("save_mode must be 'u8' or 'u16'")
-
-        cv2.imwrite(str(out_path), out_img)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(out_path, depth_processed)

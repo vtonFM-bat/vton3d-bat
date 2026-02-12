@@ -14,6 +14,7 @@ pipeline:
     qwen: true
     optical_flow: true
     background_segmentation: true
+    depth_loss: true
     gsplat: true
   input_mirror: "copy"
 
@@ -80,6 +81,11 @@ background_segmentation:
   wandb_prefix: "human_seg"
   overlay_alpha: 0.45
 
+sapiens_depth:
+  depth_type: "DEPTH_1B"
+  overwrite: true
+  device: null
+
 gsplat:
   test_every: 8
   data_factor: 1
@@ -106,3 +112,11 @@ gsplat:
     - 3000
     - 3250
     - 3499
+
+  depth:
+    depth_lambda: 0.01
+    depth_eps: 1.0e-6
+    depth_zmin: 1.0e-3
+    depth_warmup: 1500
+    depth_ramp: 4000
+    depth_max_points: null

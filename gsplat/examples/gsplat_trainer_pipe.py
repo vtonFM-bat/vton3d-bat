@@ -180,6 +180,14 @@ class Config:
     # Weight for depth loss
     depth_lambda: float = 1e-2
 
+    depth_dir: Optional[str] = None
+    depth_mask_dir: Optional[str] = None
+    depth_eps: float = 1e-6
+    depth_zmin: float = 1e-3
+    depth_warmup: int = 1500
+    depth_ramp: int = 4000
+    depth_max_points: Optional[int] = None
+
     # Dump information to tensorboard every this steps
     tb_every: int = 100
     # Save training images to tensorboard
@@ -350,7 +358,10 @@ class Runner:
             split="train",
             patch_size=cfg.patch_size,
             load_depths=cfg.depth_loss,
+            depth_dir=cfg.depth_dir,
+            depth_mask_dir=cfg.depth_mask_dir,
         )
+
         self.valset = Dataset(self.parser, split="val")
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         print("Scene scale:", self.scene_scale)
@@ -631,8 +642,10 @@ class Runner:
             image_ids = data["image_id"].to(device)
             masks = data["mask"].to(device) if "mask" in data else None  # [1, H, W]
             if cfg.depth_loss:
-                points = data["points"].to(device)  # [1, M, 2]
-                depths_gt = data["depths"].to(device)  # [1, M]
+                depth_gt = data["depth_map"].to(device)  # [H, W] oder [1,H,W]
+                depth_mask = data["depth_mask"].to(device) if "depth_mask" in data else None
+                if depth_mask is not None:
+                    depth_mask = depth_mask.bool()
 
             height, width = pixels.shape[1:3]
 
@@ -702,24 +715,71 @@ class Runner:
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
 
             if cfg.depth_loss:
-                # query depths from depth map
-                points = torch.stack(
-                    [
-                        points[:, :, 0] / (width - 1) * 2 - 1,
-                        points[:, :, 1] / (height - 1) * 2 - 1,
-                    ],
-                    dim=-1,
-                )  # normalize to [-1, 1]
-                grid = points.unsqueeze(2)  # [1, M, 1, 2]
-                depths = F.grid_sample(
-                    depths.permute(0, 3, 1, 2), grid, align_corners=True
-                )  # [1, 1, M, 1]
-                depths = depths.squeeze(3).squeeze(1)  # [1, M]
-                # calculate loss in disparity space
-                disp = torch.where(depths > 0.0, 1.0 / depths, torch.zeros_like(depths))
-                disp_gt = 1.0 / depths_gt  # [1, M]
-                depthloss = F.l1_loss(disp, disp_gt) * self.scene_scale
-                loss += depthloss * cfg.depth_lambda
+                # rendered expected depth: depths is [1,H,W,1]
+                Z_rend = depths  # [1, H, W, 1]
+
+                # depth_gt can be [H,W] or [1,H,W]
+                Z_gt = depth_gt
+                if Z_gt.ndim == 2:
+                    Z_gt = Z_gt.unsqueeze(0).unsqueeze(-1)  # [1,H,W,1]
+                elif Z_gt.ndim == 3:
+                    Z_gt = Z_gt.unsqueeze(-1)  # [1,H,W,1]
+                else:
+                    raise ValueError(f"Unexpected depth_gt shape: {Z_gt.shape}")
+
+                # mask: person mask preferred, else valid pixels only
+                if depth_mask is not None:
+                    M = depth_mask
+                    if M.ndim == 2:
+                        M = M.unsqueeze(0)  # [1,H,W]
+                    M = M.unsqueeze(-1)  # [1,H,W,1]
+                else:
+                    M = torch.ones_like(Z_gt, dtype=torch.bool)
+
+                eps = cfg.depth_eps
+                zmin = cfg.depth_zmin
+
+                # valid pixels: inside mask + positive + finite
+                valid = (
+                        M
+                        & torch.isfinite(Z_gt)
+                        & torch.isfinite(Z_rend)
+                        & (Z_gt > 0)
+                        & (Z_rend > 0)
+                )
+
+                # Clamp to avoid log(0)
+                Zg = torch.clamp(Z_gt, min=zmin)
+                Zr = torch.clamp(Z_rend, min=zmin)
+
+                # optional subsample for speed
+                if cfg.depth_max_points is not None:
+                    flat_valid = valid.view(-1)
+                    idx = torch.nonzero(flat_valid, as_tuple=False).squeeze(-1)
+                    if idx.numel() > 0:
+                        if idx.numel() > cfg.depth_max_points:
+                            perm = torch.randperm(idx.numel(), device=device)[: cfg.depth_max_points]
+                            idx = idx[perm]
+                        dlog = (torch.log(Zr.view(-1)[idx] + eps) - torch.log(Zg.view(-1)[idx] + eps)).abs().mean()
+                    else:
+                        dlog = torch.zeros([], device=device)
+                else:
+                    if valid.any():
+                        dlog = (torch.log(Zr[valid] + eps) - torch.log(Zg[valid] + eps)).abs().mean()
+                    else:
+                        dlog = torch.zeros([], device=device)
+
+                # Warmup + ramp
+                if step < cfg.depth_warmup:
+                    w = 0.0
+                elif cfg.depth_ramp > 0:
+                    w = min(1.0, float(step - cfg.depth_warmup) / float(cfg.depth_ramp))
+                else:
+                    w = 1.0
+
+                depthloss = dlog
+                loss = loss + (cfg.depth_lambda * w) * depthloss
+
             if cfg.use_bilateral_grid:
                 tvloss = 10 * total_variation_loss(self.bil_grids.grids)
                 loss += tvloss
