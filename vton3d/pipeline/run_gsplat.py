@@ -107,17 +107,8 @@ def run_step_gsplat(cfg: dict) -> None:
 
     if enable_depth_loss:
         cmd += [
-            "--depth_loss",
-            "--depth_dir", str(depth_dir),
-            "--depth_mask_dir", str(depth_mask_dir),
-            "--depth_lambda", str(depth_lambda),
-            "--depth_eps", str(depth_eps),
-            "--depth_zmin", str(depth_zmin),
-            "--depth_warmup", str(depth_warmup),
-            "--depth_ramp", str(depth_ramp),
+            "--dense_depth_dir", str(depth_dir),
         ]
-        if depth_max_points is not None:
-            cmd += ["--depth_max_points", str(depth_max_points)]
 
         print("  -> Depth loss ENABLED")
         print(f"     depth_dir: {depth_dir}")
