@@ -286,25 +286,42 @@ def depth_gradient_loss_log(
     return loss_x + loss_y
 
 
-def surface_consistency_loss(
-    means: torch.Tensor,        # [N,3]
-    covs: torch.Tensor,         # [N,3,3]
-    knn_idx: torch.Tensor,      # [N,k]
+def surface_consistency_loss_fast(
+    means: torch.Tensor,     # [N,3]
+    scales: torch.Tensor,    # [N,3]  (NOT log scale, real scale!)
+    quats: torch.Tensor,     # [N,4]  wxyz
+    knn_idx: torch.Tensor,   # [N,k]
     mode: str = "l2",
-) -> torch.Tensor:
-    """
-    Penalize neighbor displacement along local normal (smallest eigenvector of cov).
-    """
-    evals, evecs = torch.linalg.eigh(covs)      # evecs: [N,3,3] ascending evals
-    n = evecs[..., 0]                           # [N,3] smallest eigenvector
+):
+    # normalize quaternion
+    q = F.normalize(quats, dim=-1)
+    qw, qx, qy, qz = q[:,0], q[:,1], q[:,2], q[:,3]
 
-    nbr = means[knn_idx]                        # [N,k,3]
-    diff = nbr - means[:, None, :]              # [N,k,3]
-    plane_err = (diff * n[:, None, :]).sum(dim=-1)  # [N,k]
+    # rotation matrix
+    R = torch.stack([
+        1 - 2*(qy*qy + qz*qz), 2*(qx*qy - qz*qw),     2*(qx*qz + qy*qw),
+        2*(qx*qy + qz*qw),     1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qx*qw),
+        2*(qx*qz - qy*qw),     2*(qy*qz + qx*qw),     1 - 2*(qx*qx + qy*qy),
+    ], dim=-1).view(-1,3,3)
+
+    # axis of smallest gaussian scale → surface normal
+    min_axis = torch.argmin(scales, dim=-1)  # [N]
+
+    # gather normals
+    n = R[torch.arange(R.shape[0], device=R.device), :, min_axis]  # [N,3]
+    n = F.normalize(n, dim=-1)
+
+    # neighbor difference
+    nbr = means[knn_idx]                  # [N,k,3]
+    diff = nbr - means[:,None,:]          # [N,k,3]
+
+    # distance along normal
+    plane_err = (diff * n[:,None,:]).sum(dim=-1)
 
     if mode == "l1":
         return plane_err.abs().mean()
-    return (plane_err ** 2).mean()
+    return (plane_err**2).mean()
+
 
 
 
@@ -954,8 +971,17 @@ class Runner:
                     S2 = torch.diag_embed(scales_s * scales_s)  # [M,3,3]
                     covs_s = R @ S2 @ R.transpose(-1, -2)  # [M,3,3]
 
-                    surf_loss = surface_consistency_loss(
-                        means_s, covs_s, self._surface_knn_idx_cache, mode="l2"
+                    scales_s = torch.exp(self.splats["scales"][subset_idx])
+                    scales_s = torch.clamp(scales_s, min=1e-6, max=self.scene_scale)
+
+                    quats_s = self.splats["quats"][subset_idx]
+
+                    surf_loss = surface_consistency_loss_fast(
+                        means_s,
+                        scales_s,
+                        quats_s,
+                        self._surface_knn_idx_cache,
+                        mode="l2"
                     )
 
                     loss = loss + (w_surf * surf_loss)
