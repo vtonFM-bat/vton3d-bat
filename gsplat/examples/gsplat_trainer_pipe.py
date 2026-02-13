@@ -41,10 +41,6 @@ from gsplat.strategy import DefaultStrategy, MCMCStrategy
 from gsplat_viewer import GsplatViewer, GsplatRenderTabState
 from nerfview import CameraState, RenderTabState, apply_float_colormap
 
-from drgs_utils.loss_utils import nearMean_map, image2canny
-from drgs_utils.image_utils import normalize_depth
-
-
 
 @dataclass
 class Config:
@@ -184,17 +180,19 @@ class Config:
     # Weight for depth loss
     depth_lambda: float = 1e-2
 
-    # ---- Dense NN depth supervision (Sapiens) ----
-    dense_depth_loss: bool = True
-    dense_depth_dir: str = ""  # directory with per-image depth maps (same stem as image)
-    dense_depth_lambda: float = 5e-2  # supervision weight (DRGS-like)
+    depth_dir: Optional[str] = None
+    depth_mask_dir: Optional[str] = None
+    depth_eps: float = 1e-6
+    depth_zmin: float = 1e-3
+    depth_warmup: int = 1500
+    depth_ramp: int = 4000
+    depth_max_points: Optional[int] = None
 
-    # ---- DRGS regularization term ----
-    depth_reg_lambda: float = 1e-1  # regularizer weight
-    canny_low: int = 100
-    canny_high: int = 200
-
-    canny_dilate: int = 0
+    # Gradient depth loss (optional)
+    depth_grad_loss: bool = True
+    depth_grad_lambda: float = 1e-2  # typ. 0.01–0.2
+    depth_grad_mode: Literal["l1", "charbonnier"] = "l1"
+    depth_grad_charb_eps: float = 1e-3  # nur für charbonnier
 
     # Dump information to tensorboard every this steps
     tb_every: int = 100
@@ -229,6 +227,55 @@ class Config:
             strategy.refine_every = int(strategy.refine_every * factor)
         else:
             assert_never(strategy)
+
+
+def _finite_diff_x(t: torch.Tensor) -> torch.Tensor:
+    # t: [B,H,W,1]
+    return t[:, :, 1:, :] - t[:, :, :-1, :]
+
+def _finite_diff_y(t: torch.Tensor) -> torch.Tensor:
+    return t[:, 1:, :, :] - t[:, :-1, :, :]
+
+def _charbonnier(x: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
+    return torch.sqrt(x * x + eps * eps)
+
+def depth_gradient_loss_log(
+    Zr: torch.Tensor,         # [B,H,W,1]
+    Zg: torch.Tensor,         # [B,H,W,1]
+    valid: torch.Tensor,      # [B,H,W,1] bool
+    mode: str = "l1",
+    charb_eps: float = 1e-3,
+) -> torch.Tensor:
+    """
+    Gradient loss on log-depth: compares ∂x logZ and ∂y logZ.
+    Works even if Zr and Zg have different scales.
+    """
+    # compute log
+    lr = torch.log(torch.clamp(Zr, min=1e-6))
+    lg = torch.log(torch.clamp(Zg, min=1e-6))
+
+    # grads
+    gx_r, gy_r = _finite_diff_x(lr), _finite_diff_y(lr)
+    gx_g, gy_g = _finite_diff_x(lg), _finite_diff_y(lg)
+
+    # valid mask for gradients: both pixels involved must be valid
+    vx = valid[:, :, 1:, :] & valid[:, :, :-1, :]
+    vy = valid[:, 1:, :, :] & valid[:, :-1, :, :]
+
+    dx = gx_r - gx_g
+    dy = gy_r - gy_g
+
+    if mode == "charbonnier":
+        dx = _charbonnier(dx, eps=charb_eps)
+        dy = _charbonnier(dy, eps=charb_eps)
+    else:  # "l1"
+        dx = dx.abs()
+        dy = dy.abs()
+
+    # masked mean
+    loss_x = dx[vx].mean() if vx.any() else torch.zeros([], device=Zr.device)
+    loss_y = dy[vy].mean() if vy.any() else torch.zeros([], device=Zr.device)
+    return loss_x + loss_y
 
 
 def create_splats_with_optimizers(
@@ -366,9 +413,10 @@ class Runner:
             split="train",
             patch_size=cfg.patch_size,
             load_depths=cfg.depth_loss,
-            load_dense_depths=cfg.dense_depth_loss,
-            dense_depth_dir=cfg.dense_depth_dir,
+            depth_dir=cfg.depth_dir,
+            depth_mask_dir=cfg.depth_mask_dir,
         )
+
         self.valset = Dataset(self.parser, split="val")
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         print("Scene scale:", self.scene_scale)
@@ -649,8 +697,10 @@ class Runner:
             image_ids = data["image_id"].to(device)
             masks = data["mask"].to(device) if "mask" in data else None  # [1, H, W]
             if cfg.depth_loss:
-                points = data["points"].to(device)  # [1, M, 2]
-                depths_gt = data["depths"].to(device)  # [1, M]
+                depth_gt = data["depth_map"].to(device)  # [H, W] oder [1,H,W]
+                depth_mask = data["depth_mask"].to(device) if "depth_mask" in data else None
+                if depth_mask is not None:
+                    depth_mask = depth_mask.bool()
 
             height, width = pixels.shape[1:3]
 
@@ -673,7 +723,7 @@ class Runner:
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
                 image_ids=image_ids,
-                render_mode="RGB+ED" if (cfg.depth_loss or cfg.dense_depth_loss) else "RGB",
+                render_mode="RGB+ED" if cfg.depth_loss else "RGB",
                 masks=masks,
             )
             if renders.shape[-1] == 4:
@@ -720,74 +770,86 @@ class Runner:
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
 
             if cfg.depth_loss:
-                # query depths from depth map
-                points = torch.stack(
-                    [
-                        points[:, :, 0] / (width - 1) * 2 - 1,
-                        points[:, :, 1] / (height - 1) * 2 - 1,
-                    ],
-                    dim=-1,
-                )  # normalize to [-1, 1]
-                grid = points.unsqueeze(2)  # [1, M, 1, 2]
-                depths = F.grid_sample(
-                    depths.permute(0, 3, 1, 2), grid, align_corners=True
-                )  # [1, 1, M, 1]
-                depths = depths.squeeze(3).squeeze(1)  # [1, M]
-                # calculate loss in disparity space
-                disp = torch.where(depths > 0.0, 1.0 / depths, torch.zeros_like(depths))
-                disp_gt = 1.0 / depths_gt  # [1, M]
-                depthloss = F.l1_loss(disp, disp_gt) * self.scene_scale
-                loss += depthloss * cfg.depth_lambda
+                gradloss = torch.zeros([], device=device)
 
-            if cfg.dense_depth_loss:
-                assert depths is not None, "Need render_mode='RGB+ED' to get depths."
+                # rendered expected depth: depths is [1,H,W,1]
+                Z_rend = depths  # [1, H, W, 1]
 
-                D_gs = depths.permute(0, 3, 1, 2)  # [B,1,H,W]
-
-                D_nn = data["sapiens_depth"].to(device)  # [B,H,W] oder [H,W]
-                if D_nn.ndim == 2:
-                    D_nn = D_nn[None]
-                D_nn = D_nn.unsqueeze(1)  # [B,1,H,W]
-
-                valid = data.get("sapiens_valid", None)
-                if valid is None:
-                    valid = torch.ones_like(D_nn, device=device, dtype=D_nn.dtype)
+                # depth_gt can be [H,W] or [1,H,W]
+                Z_gt = depth_gt
+                if Z_gt.ndim == 2:
+                    Z_gt = Z_gt.unsqueeze(0).unsqueeze(-1)  # [1,H,W,1]
+                elif Z_gt.ndim == 3:
+                    Z_gt = Z_gt.unsqueeze(-1)  # [1,H,W,1]
                 else:
-                    if valid.ndim == 2:
-                        valid = valid[None]
-                    valid = valid.to(device).unsqueeze(1).float()
+                    raise ValueError(f"Unexpected depth_gt shape: {Z_gt.shape}")
 
-                if masks is not None:
-                    valid = valid * masks.unsqueeze(1).float()
-
-                # ---- DRGS depth supervision: normalize then L1 ----
-                Dg_n = normalize_depth(D_gs)
-                Dn_n = normalize_depth(D_nn)
-                depth_sup = ((Dg_n - Dn_n).abs() * valid).sum() / (valid.sum() + 1e-6)
-
-                # ---- DRGS regularizer: near-mean smoothing away from edges ----
-                # image2canny expects torch image [H,W,3] in [0,1]
-                img_t = pixels[0]  # already float in [0,1], shape [H,W,3]
-
-                canny_nonedge = image2canny(
-                    img_t,
-                    thres1=cfg.canny_low,
-                    thres2=cfg.canny_high,
-                    isEdge1=False,
-                ).to(device)  # [H,W] non-edge=1
-
-                if canny_nonedge.ndim == 2:
-                    canny_nonedge = canny_nonedge[None, None]  # [1,1,H,W]
-                elif canny_nonedge.ndim == 4:
-                    pass
+                # mask: person mask preferred, else valid pixels only
+                if depth_mask is not None:
+                    M = depth_mask
+                    if M.ndim == 2:
+                        M = M.unsqueeze(0)  # [1,H,W]
+                    M = M.unsqueeze(-1)  # [1,H,W,1]
                 else:
-                    raise ValueError(canny_nonedge.shape)
+                    M = torch.ones_like(Z_gt, dtype=torch.bool)
 
-                reg_mask = valid * canny_nonedge
-                near = nearMean_map(D_gs, reg_mask)
-                depth_reg = (((near - D_gs) ** 2) * reg_mask).sum() / (reg_mask.sum() + 1e-6)
+                eps = cfg.depth_eps
+                zmin = cfg.depth_zmin
 
-                loss = loss + cfg.dense_depth_lambda * depth_sup + cfg.depth_reg_lambda * depth_reg
+                # valid pixels: inside mask + positive + finite
+                valid = (
+                        M
+                        & torch.isfinite(Z_gt)
+                        & torch.isfinite(Z_rend)
+                        & (Z_gt > 0)
+                        & (Z_rend > 0)
+                )
+
+                # Clamp to avoid log(0)
+                Zg = torch.clamp(Z_gt, min=zmin)
+                Zr = torch.clamp(Z_rend, min=zmin)
+
+                # optional subsample for speed
+                if cfg.depth_max_points is not None:
+                    flat_valid = valid.view(-1)
+                    idx = torch.nonzero(flat_valid, as_tuple=False).squeeze(-1)
+                    if idx.numel() > 0:
+                        if idx.numel() > cfg.depth_max_points:
+                            perm = torch.randperm(idx.numel(), device=device)[: cfg.depth_max_points]
+                            idx = idx[perm]
+                        d = torch.log(Zr.view(-1)[idx] + eps) - torch.log(Zg.view(-1)[idx] + eps)
+                        d = d - d.mean()
+                        dlog = d.abs().mean()
+
+                    else:
+                        dlog = torch.zeros([], device=device)
+                else:
+                    if valid.any():
+                        d = torch.log(Zr[valid] + eps) - torch.log(Zg[valid] + eps)
+                        d = d - d.mean()
+                        dlog = d.abs().mean()
+
+                    else:
+                        dlog = torch.zeros([], device=device)
+
+                # Warmup + ramp
+                if step < cfg.depth_warmup:
+                    w = 0.0
+                elif cfg.depth_ramp > 0:
+                    w = min(1.0, float(step - cfg.depth_warmup) / float(cfg.depth_ramp))
+                else:
+                    w = 1.0
+
+                depthloss = dlog
+                loss = loss + (cfg.depth_lambda * w) * depthloss
+
+                if cfg.depth_grad_loss:
+                    gradloss = depth_gradient_loss_log(
+                        Zr=Zr, Zg=Zg, valid=valid,
+                        mode=cfg.depth_grad_mode,
+                        charb_eps=cfg.depth_grad_charb_eps,
+                    )
+                    loss = loss + (cfg.depth_grad_lambda * w) * gradloss
 
             if cfg.use_bilateral_grid:
                 tvloss = 10 * total_variation_loss(self.bil_grids.grids)
@@ -804,6 +866,9 @@ class Runner:
             desc = f"loss={loss.item():.3f}| " f"sh degree={sh_degree_to_use}| "
             if cfg.depth_loss:
                 desc += f"depth loss={depthloss.item():.6f}| "
+                if cfg.depth_grad_loss:
+                    desc += f"depth grad={gradloss.item():.6f}| "
+
             if cfg.pose_opt and cfg.pose_noise:
                 # monitor the pose error if we inject noise
                 pose_err = F.l1_loss(camtoworlds_gt, camtoworlds)
@@ -828,6 +893,8 @@ class Runner:
                 self.writer.add_scalar("train/mem", mem, step)
                 if cfg.depth_loss:
                     self.writer.add_scalar("train/depthloss", depthloss.item(), step)
+                if cfg.depth_grad_loss:
+                    self.writer.add_scalar("train/depth_gradloss", gradloss.item(), step)
                 if cfg.use_bilateral_grid:
                     self.writer.add_scalar("train/tvloss", tvloss.item(), step)
                 if cfg.tb_save_image:
