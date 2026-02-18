@@ -158,7 +158,34 @@ def composite_human_on_random_bg(
 
 
 def resize_exact(img: Image.Image, target_h: int, target_w: int) -> Image.Image:
-    return img.resize((target_w, target_h), Image.LANCZOS)
+    """
+    Resize ohne Verzerrung:
+    - skaliert proportional
+    - schneidet mittig ab (center crop)
+    """
+    img = img.convert("RGB")
+    w, h = img.size
+
+    if w == 0 or h == 0:
+        raise ValueError("Invalid image size")
+
+    # Faktor berechnen (cover)
+    scale = max(target_w / w, target_h / h)
+
+    new_w = int(round(w * scale))
+    new_h = int(round(h * scale))
+
+    img = img.resize((new_w, new_h), Image.LANCZOS)
+
+    # center crop
+    left = (new_w - target_w) // 2
+    top = (new_h - target_h) // 2
+    right = left + target_w
+    bottom = top + target_h
+
+    img = img.crop((left, top, right, bottom))
+    return img
+
 
 
 # -----------------------------
