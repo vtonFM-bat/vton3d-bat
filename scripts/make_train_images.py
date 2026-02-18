@@ -8,6 +8,7 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, List
+import shutil
 
 import numpy as np
 from PIL import Image
@@ -208,19 +209,36 @@ def process_tree(
 
     for p in in_paths:
         rel = p.relative_to(input_root)
+
+        # Standard-Ziel (normaler Output-Baum)
         out_path = output_root / rel
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Failed-Ziel (separater Baum)
+        failed_path = output_root / "failed" / rel
+        failed_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 1) "flat" -> nur kopieren, nicht bearbeiten
         if should_skip_flat(p):
-            skipped_flat += 1
+            try:
+                shutil.copy2(p, out_path)
+                skipped_flat += 1
+            except Exception as e:
+                failed += 1
+                print(f"[ERROR][copy flat] {p} -> {e}")
             continue
 
+        # 2) Alle anderen -> bearbeiten
         try:
             img = Image.open(p).convert("RGB")
 
             human_mask = segmenter.segment_human_mask(img)
             if human_mask is None:
-                # Wenn kein Mensch gefunden: überspringen (oder du kannst auch einfach normal resize+save machen)
+                # kein Mensch -> in failed kopieren
+                try:
+                    shutil.copy2(p, failed_path)
+                except Exception as e:
+                    print(f"[ERROR][copy failed no-human] {p} -> {e}")
                 skipped_no_human += 1
                 continue
 
@@ -230,7 +248,7 @@ def process_tree(
             composed = composite_human_on_random_bg(img, human_mask, bg_img, feather_px=2)
             composed = resize_exact(composed, target_h=target_h, target_w=target_w)
 
-            # Speichern: gleiche Endung wie Original. Für JPG -> JPEG speichern.
+            # Speichern im normalen Output-Baum
             suffix = out_path.suffix.lower()
             if suffix in (".jpg", ".jpeg"):
                 composed.save(out_path, format="JPEG", quality=95)
@@ -240,8 +258,14 @@ def process_tree(
             done += 1
 
         except Exception as e:
+            # Exception -> Original in failed kopieren
+            try:
+                shutil.copy2(p, failed_path)
+            except Exception as e2:
+                print(f"[ERROR][copy failed exception] {p} -> {e2}")
+
             failed += 1
-            print(f"[ERROR] {p} -> {e}")
+            print(f"[ERROR][process] {p} -> {e}")
 
     print("----- DONE -----")
     print(f"Input images found:        {total}")
