@@ -43,6 +43,9 @@ from vton3d.utils.background_segmentation import BackgroundSegmentation, Backgro
 
 from vton3d.vggt.run_vggt import vggt2colmap
 from vton3d.qwen.run_qwen import run_qwen_from_config_dict
+from vton3d.utils.depth_maps import SapiensDepthGenerator
+
+
 from argparse import Namespace
 from PIL import Image
 
@@ -443,6 +446,48 @@ def run_step_background_segmentation(cfg: dict):
     print(f"  -> Masks saved to: {summary['masks_dir']}")
     print("=== [Step Background Segmentation] Done ===\n")
 
+
+def run_step_depth_maps(cfg: dict):
+    print("=== Step Sapiens Depth Maps ===")
+
+    base_scene_dir = Path(cfg["paths"]["scene_dir"]).resolve()
+
+    input_dir = base_scene_dir / "qwen" / "images"
+    mask_dir = base_scene_dir / "qwen" / "human_masks"
+    output_dir = base_scene_dir / "qwen" / "depth_maps"
+
+    if not input_dir.exists():
+        raise FileNotFoundError(f"Missing qwen images dir: {input_dir}")
+    if not mask_dir.exists():
+        raise FileNotFoundError(f"Missing human masks dir: {mask_dir}")
+
+    # Repo root ermitteln (run_pipeline.py liegt typischerweise in vton3d/pipeline/)
+    repo_root = Path(__file__).resolve().parents[2]
+
+    depth_type = cfg.get("sapiens_depth", {}).get("depth_type", "DEPTH_1B")
+    overwrite = bool(cfg.get("sapiens_depth", {}).get("overwrite", True))
+    device = cfg.get("sapiens_depth", {}).get("device", None)  # None => auto cuda/cpu
+
+    gen = SapiensDepthGenerator(
+        repo_root=repo_root,
+        device=device,
+        depth_type=depth_type,
+    )
+
+    gen.generate_depth_folder(
+        input_dir=str(input_dir),
+        mask_dir=str(mask_dir),
+        output_dir=str(output_dir),
+        image_exts=(".png", ".jpg", ".jpeg"),
+        mask_ext=".png",
+        overwrite=overwrite,
+    )
+
+    print(f"  -> Depth maps saved to: {output_dir}")
+    print("=== [Step Depth Maps] Done ===\n")
+
+
+
 def run_pipeline(cfg: dict, base_scene_dir: Path):
     """
     Main pipeline function.
@@ -477,6 +522,9 @@ def run_pipeline(cfg: dict, base_scene_dir: Path):
 
     if steps_cfg["background_segmentation"] is True:
         run_step_background_segmentation(cfg)
+
+    if steps_cfg.get("depth_loss", True) is True:
+        run_step_depth_maps(cfg)
 
     print("[Pipeline] All defined steps completed.")
 

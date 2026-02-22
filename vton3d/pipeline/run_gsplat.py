@@ -57,6 +57,17 @@ def run_step_gsplat(cfg: dict) -> None:
     wandb_cfg = cfg.get("wandb", {})
     wandb_project = wandb_cfg.get("project", "vton_pipeline")
 
+    steps = (cfg.get("pipeline", {}) or {}).get("steps", {}) or {}
+    enable_depth_loss = bool(steps.get("depth_loss", False))  # <-- your switch
+
+    depth_cfg = (gs_cfg.get("depth", {}) or {})
+
+    depth_lambda = depth_cfg.get("depth_lambda", 0.01)
+    depth_grad_lambda = depth_cfg.get("depth_grad_lambda", 0.05)
+    depth_grad_mode = depth_cfg.get("depth_grad_mode", "l1")
+    depth_grad_charb_eps = depth_cfg.get("depth_grad_charb_eps", 1e-3)
+    depth_zmin = depth_cfg.get("depth_zmin", 1e-3)
+
     # Erwartet: cfg["paths"]["scene_dir"]
     project_root = Path(__file__).resolve().parents[2]
     gsplat_repo = project_root / "gsplat"
@@ -70,6 +81,9 @@ def run_step_gsplat(cfg: dict) -> None:
 
     data_dir = Path("..") / scene_dir / "qwen"
     result_dir = Path("..") / scene_dir / "results" / "qwen_gsplat"
+
+    depth_dir = data_dir / "depth_maps"
+    depth_mask_dir = data_dir / "human_masks"
 
     cmd = [
         sys.executable,
@@ -89,6 +103,22 @@ def run_step_gsplat(cfg: dict) -> None:
         cmd.append("--disable_video")
     if disable_viewer:
         cmd.append("--disable_viewer")
+
+    if enable_depth_loss:
+        cmd += [
+            "--depth_loss",
+            "--depth_dir", str(depth_dir),
+            "--depth_mask_dir", str(depth_mask_dir),
+            "--depth_lambda", str(depth_lambda),
+            "--depth_grad_lambda", str(depth_grad_lambda),
+            "--depth_grad_mode", str(depth_grad_mode),
+            "--depth_grad_charb_eps", str(depth_grad_charb_eps),
+            "--depth_zmin", str(depth_zmin),
+        ]
+
+        print("  -> Depth loss ENABLED")
+        print(f"     depth_dir: {depth_dir}")
+        print(f"     depth_mask_dir: {depth_mask_dir}")
 
     print(f"  -> gsplat repo: {gsplat_repo}")
     print(f"  -> running: {' '.join(cmd)}")

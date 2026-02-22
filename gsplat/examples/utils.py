@@ -222,3 +222,14 @@ def apply_depth_colormap(
     if acc is not None:
         img = img * acc + (1.0 - acc)
     return img
+
+def knn_indices(x: torch.Tensor, k: int):
+    """
+    x: [N,3]
+    returns indices [N,k] of nearest neighbors (excluding self)
+    GPU friendly
+    """
+    d = torch.cdist(x, x)                    # [N,N]
+    idx = torch.topk(d, k=k+1, largest=False).indices[:, 1:]
+    return idx
+

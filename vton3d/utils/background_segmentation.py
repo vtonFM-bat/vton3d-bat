@@ -229,7 +229,7 @@ class BackgroundSegmentation:
         if not qwen_images_dir.exists():
             raise FileNotFoundError(f"Missing qwen images dir: {qwen_images_dir}")
 
-        masks_dir = scene_dir / self.cfg.masks_dir_name
+        masks_dir = scene_dir / "qwen" / self.cfg.masks_dir_name
         masks_dir.mkdir(parents=True, exist_ok=True)
 
         if exts is None:
