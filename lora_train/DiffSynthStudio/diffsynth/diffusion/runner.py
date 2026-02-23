@@ -85,28 +85,21 @@ def launch_training_task(
             return
         if not accelerator.is_main_process:
             return
+        if not os.environ.get("WANDB_PROJECT"):
+            return
 
-        from pathlib import Path
         from PIL import Image
+        import wandb
+        from pathlib import Path
 
-        out_dir = Path(model_logger.output_path) / "eval_images" / f"step_{step:07d}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        use_wandb = bool(os.environ.get("WANDB_PROJECT"))
-        if use_wandb:
-            try:
-                import wandb
-            except Exception:
-                use_wandb = False
-
-        infer_steps = int(getattr(args, "eval_infer_steps", 20))
-        cfg_scale = float(getattr(args, "eval_cfg_scale", 1.0))
-        seed = int(getattr(args, "eval_seed", 0))
-
+        infer_steps = int(getattr(args, "eval_infer_steps", 20)) if args is not None else 20
+        cfg_scale = float(getattr(args, "eval_cfg_scale", 1.0)) if args is not None else 1.0
+        seed = int(getattr(args, "eval_seed", 0)) if args is not None else 0
         base = Path(getattr(args, "val_dataset_base_path")) if args is not None else Path(".")
 
         model.eval()
         with torch.no_grad():
+
             wandb_imgs = []
 
             for s in tracked_val_samples:
@@ -118,24 +111,39 @@ def launch_training_task(
                 if len(edit_paths) == 0:
                     continue
 
-                input_path = edit_paths[0]
+                # Load full conditioning list (repo-style inference)
+                edit_imgs = [Image.open(p).convert("RGB") for p in edit_paths]
 
-                input_img = Image.open(input_path).convert("RGB")
+                # For visualization only
+                input_img = edit_imgs[0]
                 target_img = Image.open(target_path).convert("RGB")
-                edit_imgs = [Image.open(p).convert("RGB") for p in edit_paths[1:]]
+                w, h = input_img.size
 
-                out = model.pipe(
-                    s["prompt"],
-                    input_image=input_img,
-                    edit_image=edit_imgs,
-                    height=input_img.size[1],
-                    width=input_img.size[0],
-                    num_inference_steps=infer_steps,
-                    cfg_scale=cfg_scale,
-                    seed=seed,
-                    zero_cond_t=True,
-                )
+                try:
+                    out = model.pipe(
+                        s["prompt"],
+                        edit_image=edit_imgs,
+                        height=h,
+                        width=w,
+                        num_inference_steps=infer_steps,
+                        seed=seed,
+                        edit_image_auto_resize=True,
+                        zero_cond_t=True,
+                        cfg_scale=cfg_scale,
+                    )
+                except TypeError:
+                    out = model.pipe(
+                        s["prompt"],
+                        edit_image=edit_imgs,
+                        height=h,
+                        width=w,
+                        num_inference_steps=infer_steps,
+                        seed=seed,
+                        edit_image_auto_resize=True,
+                        zero_cond_t=True,
+                    )
 
+                # Normalize output
                 if hasattr(out, "save"):
                     pred_img = out
                 elif isinstance(out, dict) and "images" in out:
@@ -143,19 +151,17 @@ def launch_training_task(
                 else:
                     pred_img = out[0]
 
-                w, h = input_img.size
+                # Build grid: input | pred | target
                 grid = Image.new("RGB", (w * 3, h))
                 grid.paste(input_img.resize((w, h)), (0, 0))
                 grid.paste(pred_img.resize((w, h)), (w, 0))
                 grid.paste(target_img.resize((w, h)), (w * 2, 0))
 
-                save_path = out_dir / f"{sid}.png"
-                grid.save(save_path)
+                wandb_imgs.append(
+                    wandb.Image(grid, caption=f"{sid} @ step {step}")
+                )
 
-                if use_wandb:
-                    wandb_imgs.append(wandb.Image(grid, caption=f"{sid} @ step {step}"))
-
-            if use_wandb and len(wandb_imgs) > 0:
+            if len(wandb_imgs) > 0:
                 accelerator.log({"val/preds": wandb_imgs}, step=step)
 
         model.train()
