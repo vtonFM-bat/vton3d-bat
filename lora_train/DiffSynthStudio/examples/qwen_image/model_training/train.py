@@ -87,6 +87,17 @@ def qwen_image_parser():
     parser = add_image_size_config(parser)
     parser.add_argument("--tokenizer_path", type=str, default=None, help="Path to tokenizer.")
     parser.add_argument("--processor_path", type=str, default=None, help="Path to the processor. If provided, the processor will be used for image editing.")
+    parser.add_argument("--val_dataset_base_path", type=str, default=None)
+    parser.add_argument("--val_dataset_metadata_path", type=str, default=None)
+
+    parser.add_argument("--eval_every_steps", type=int, default=0, help="0 disables eval")
+    parser.add_argument("--eval_num_samples", type=int, default=5)
+    parser.add_argument("--eval_sample_ids", type=str, default="", help="comma-separated sample_id values to track")
+    parser.add_argument("--eval_infer_steps", type=int, default=20)
+    parser.add_argument("--eval_cfg_scale", type=float, default=1.0)
+    parser.add_argument("--eval_seed", type=int, default=0)
+    parser.add_argument("--eval_max_val_batches", type=int, default=0, help="0 = full val")
+
     return parser
 
 
@@ -124,6 +135,25 @@ if __name__ == "__main__":
             width_division_factor=16,
         )
     )
+
+    val_dataset = None
+    if args.val_dataset_base_path and args.val_dataset_metadata_path:
+        val_dataset = UnifiedDataset(
+            base_path=args.val_dataset_base_path,
+            metadata_path=args.val_dataset_metadata_path,
+            repeat=1,
+            data_file_keys=args.data_file_keys.split(","),
+            main_data_operator=UnifiedDataset.default_image_operator(
+                base_path=args.val_dataset_base_path,
+                max_pixels=args.max_pixels,
+                height=args.height,
+                width=args.width,
+                height_division_factor=16,
+                width_division_factor=16,
+            )
+        )
+
+
     model = QwenImageTrainingModule(
         model_paths=args.model_paths,
         model_id_with_origin_paths=args.model_id_with_origin_paths,
@@ -156,4 +186,7 @@ if __name__ == "__main__":
         "direct_distill": launch_training_task,
         "direct_distill:train": launch_training_task,
     }
-    launcher_map[args.task](accelerator, dataset, model, model_logger, args=args)
+    launcher_map[args.task](accelerator, dataset, model, model_logger, val_dataset=val_dataset, args=args)
+
+    if os.environ.get("WANDB_PROJECT"):
+        accelerator.end_training()

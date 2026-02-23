@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model_path",
         type=str,
-        default="ovedrive/Qwen-Image-Edit-2509-4bit",
+        default="Qwen/Qwen-Image-Edit-2511",
         help="Path or HuggingFace model ID."
     )
     parser.add_argument(
@@ -179,7 +179,7 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
     """
     wandb.define_metric("qwen/*", step_metric="qwen/image_index")
 
-    model_path = qwen_cfg.get("model_path", "ovedrive/Qwen-Image-Edit-2509-4bit")
+    model_path = qwen_cfg.get("model_path", "Qwen/Qwen-Image-Edit-2511")
     source_dir = Path(qwen_cfg["source_dir"])
     clothing_path = Path(qwen_cfg["clothing_image"])
     output_dir = Path(qwen_cfg["output_dir"])
