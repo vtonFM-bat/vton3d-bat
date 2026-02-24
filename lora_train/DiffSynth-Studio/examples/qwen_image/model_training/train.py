@@ -185,6 +185,7 @@ if __name__ == "__main__":
                 }
             },
         )
+        print("WANDB INIT CALLED:", os.environ.get("WANDB_PROJECT"))
 
 
     dataset = build_dataset(
