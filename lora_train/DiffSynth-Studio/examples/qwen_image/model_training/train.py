@@ -188,8 +188,7 @@ if __name__ == "__main__":
         )
         print("WANDB INIT CALLED:", os.environ.get("WANDB_PROJECT"))
         print("TRACKERS:", accelerator.trackers)
-        accelerator.log({"debug/started": 1}, step=0)
-        print("LOGGED debug/started")
+
 
     dataset = build_dataset(
         base_path=args.dataset_base_path,
