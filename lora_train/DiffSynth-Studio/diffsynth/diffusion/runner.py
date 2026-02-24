@@ -3,6 +3,7 @@ from tqdm import tqdm
 from accelerate import Accelerator
 from .training_module import DiffusionTrainingModule
 from .logger import ModelLogger
+from pathlib import Path
 
 
 def launch_training_task(
