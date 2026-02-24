@@ -170,6 +170,7 @@ if __name__ == "__main__":
 
     accelerator = accelerate.Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        log_with="wandb" if os.environ.get("WANDB_PROJECT") else None,
         kwargs_handlers=[accelerate.DistributedDataParallelKwargs(find_unused_parameters=args.find_unused_parameters)],
     )
 
