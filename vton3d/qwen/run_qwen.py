@@ -176,6 +176,21 @@ def clear_gpu_cache():
 def run_qwen_from_config_dict(qwen_cfg: dict):
     """
     Run the Qwen clothing edit batch using a config dictionary (e.g. cfg['qwen']).
+
+    Supports optional per-clothing-type prompts via a `prompts` dict in the config.
+
+    Example YAML structure:
+    qwen:
+      prompt: "default prompt"
+      prompts:
+        upper: "prompt for shirts/upper"
+        lower: "prompt for pants/lower"
+        dress: "prompt for dresses"
+      negative_prompt: "default neg"
+      negative_prompts:
+        upper: "neg for upper"
+        lower: "neg for lower"
+        dress: "neg for dress"
     """
     wandb.define_metric("qwen/*", step_metric="qwen/image_index")
 
@@ -184,7 +199,8 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
     clothing_path = Path(qwen_cfg["clothing_image"])
     output_dir = Path(qwen_cfg["output_dir"])
 
-    prompt = qwen_cfg.get(
+    # basic defaults (these may be overridden per clothing type below)
+    default_prompt = qwen_cfg.get(
         "prompt",
         (
             "Replace the person's original clothing with the clothing image. "
@@ -192,7 +208,7 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
             "face, hair, and background must remain unchanged."
         ),
     )
-    negative_prompt = qwen_cfg.get("negative_prompt", "change pose")
+    default_negative_prompt = qwen_cfg.get("negative_prompt", "change pose")
     true_cfg_scale = float(qwen_cfg.get("true_cfg_scale", 4.0))
     num_inference_steps = int(qwen_cfg.get("num_inference_steps", 20))
     seed = int(qwen_cfg.get("seed", 0))
@@ -230,6 +246,15 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
         length_flag = infer_length_flag_from_clothing_path(clothing_path)
 
     print(f"[qwen] inferred eval_flag='{eval_flag}', length_flag='{length_flag}' from clothing_image='{clothing_path}'")
+
+    # choose per-clothing prompts if provided, otherwise fall back to defaults
+    prompts_map = qwen_cfg.get("prompts", {}) or {}
+    negative_prompts_map = qwen_cfg.get("negative_prompts", {}) or {}
+
+    prompt = prompts_map.get(eval_flag, default_prompt)
+    print(f"Prompt:{prompt}")
+    negative_prompt = negative_prompts_map.get(eval_flag, default_negative_prompt)
+    print(f"negative Prompt: {negative_prompt}")
 
     for img_path in image_files:
         person_image = Image.open(img_path).convert("RGB")

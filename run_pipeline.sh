@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH -p H200
-#SBATCH --job-name=tests_qwen_params
+#SBATCH -p h200
+#SBATCH --job-name=vton_prompt_engi
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --time=2:00:00
