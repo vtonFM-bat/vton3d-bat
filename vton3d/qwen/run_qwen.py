@@ -252,7 +252,9 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
     negative_prompts_map = qwen_cfg.get("negative_prompts", {}) or {}
 
     prompt = prompts_map.get(eval_flag, default_prompt)
+    print(f"Prompt:{prompt}")
     negative_prompt = negative_prompts_map.get(eval_flag, default_negative_prompt)
+    print(f"negative Prompt: {negative_prompt}")
 
     for img_path in image_files:
         person_image = Image.open(img_path).convert("RGB")

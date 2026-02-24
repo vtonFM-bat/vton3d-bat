@@ -72,15 +72,17 @@ for person in florian can jan petra; do
     sed -i "s|^  clothing_image: .*|  clothing_image: \"${clothing_image}\"|g" "$out_cfg"
     sed -i "/^qwen:$/,/^[a-zA-Z_][a-zA-Z0-9_]*:$/ s|^  prompt: .*|  prompt: \"${prompt}\"|g" "$out_cfg"
     sed -i "/^qwen:$/,/^[a-zA-Z_][a-zA-Z0-9_]*:$/ s|^  negative_prompt: .*|  negative_prompt: \"${neg_prompt}\"|g" "$out_cfg"
-    sed -i "/^qwen:$/,/^[a-zA-Z_][a-zA-Z0-9_]*:$/ { /  negative_prompt:/ a\
-  prompts:\
-    upper: \"${PROMPT[shirt]}\"\
-    lower: \"${PROMPT[pant]}\"\
-    dress: \"${PROMPT[dress]}\"\
-  negative_prompts:\
-    upper: \"${NEG_PROMPT[shirt]}\"\
-    lower: \"${NEG_PROMPT[pant]}\"\
-    dress: \"${NEG_PROMPT[dress]}\" }" "$out_cfg"
+    sed -i "/^qwen:$/,/^[a-zA-Z_][a-zA-Z0-9_]*:$/{
+/^  negative_prompt:/a\\
+  prompts:\\
+    upper: \"${PROMPT[shirt]}\"\\
+    lower: \"${PROMPT[pant]}\"\\
+    dress: \"${PROMPT[dress]}\"\\
+  negative_prompts:\\
+    upper: \"${NEG_PROMPT[shirt]}\"\\
+    lower: \"${NEG_PROMPT[pant]}\"\\
+    dress: \"${NEG_PROMPT[dress]}\"
+}" "$out_cfg"
 
 
     echo "Submitting ${run_name}"
