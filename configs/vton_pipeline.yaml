@@ -3,8 +3,8 @@ paths:
   runs_root: "data/train/florian/sweep_runs"   # optional
 
 wandb:
-  project: "vton_optical_flow"
-  run_name: "vton_florian_16"
+  project: "vton_test_prompts"
+  run_name: "vton_person_prompt1"
   mode: "online"
 
 pipeline:
@@ -47,8 +47,14 @@ qwen:
   #qwen model
   model_path: "Qwen/Qwen-Image-Edit-2511"
   clothing_image: "data/clothing/train/upper/short/shirts/white_plants_shirt.jpg"
-  prompt: "Replace the person's original clothing with the clothing image. Do not invent new features. Keep the person identical: pose, body, face, hair, and background must remain unchanged."
-  negative_prompt: "change pose"
+  prompts:
+    upper: "Replace ONLY the person's original shirt with the clothing image. Do not redesign or stylize the garment. The new garment must match the reference exactly: same colors, fabric texture, pattern/print, logos, seams/stitching, neckline/collar, sleeve length, fit, and hem/waist details. Keep background, pose, face, hair, skin, body shape, all other clothes of the person, lighting and camera exactly unchanged. Ensure temporal consistency. Produce clean boundaries where the new garment meets skin/other clothing; remove all remnants of the original shirt."
+    lower: "Replace ONLY the person's original pant with the clothing image. Do not redesign or stylize the garment. The new garment must match the reference exactly: same colors, fabric texture, pattern/print, logos, seams/stitching, neckline/collar, sleeve length, fit, and hem/waist details. Keep background, pose, face, hair, skin, body shape, all other clothes of the person, lighting and camera exactly unchanged. Ensure temporal consistency. Produce clean boundaries where the new garment meets skin/other clothing; remove all remnants of the original pant."
+    dress: "Replace ONLY the person's original pant and shirt with the clothing image. Do not redesign or stylize the garment. The new garment must match the reference exactly: same colors, fabric texture, pattern/print, logos, seams/stitching, neckline/collar, sleeve length, fit, and hem/waist details. Keep background, pose, face, hair, skin, body shape, all other clothes of the person, lighting and camera exactly unchanged. Ensure temporal consistency. Produce clean boundaries where the new garment meets skin/other clothing; remove all remnants of the original pant and shirt."
+  negative_prompts:
+    upper: "pose change, body shape change, face change, hair change, background change, lighting change, camera change, style transfer, redesign, different garment, different color, different fabric, different pattern, different logo, extra clothing pieces, text, watermark, artifacts, blended old clothing, visible remnants of original clothing."
+    lower: "pose change, body shape change, face change, hair change, background change, lighting change, camera change, style transfer, redesign, different garment, different color, different fabric, different pattern, different logo, extra clothing pieces, text, watermark, artifacts, blended old clothing, visible remnants of original clothing."
+    dress: "pose change, body shape change, face change, hair change, background change, lighting change, camera change, style transfer, redesign, different garment, different color, different fabric, different pattern, different logo, extra clothing pieces, text, watermark, artifacts, blended old clothing, visible remnants of original clothing."
   # Diffusion parameters
   true_cfg_scale: 4.0
   num_inference_steps: 20
@@ -76,7 +82,7 @@ background_segmentation:
   mask_threshold: 0.5
   pick: "largest"          # union, largest, best_score
   masks_dir_name: "human_masks"
-  mask_suffix: "human_masks"        # optional
+  mask_suffix: ""        # optional
   wandb_log: true
   wandb_prefix: "human_seg"
   overlay_alpha: 0.45
