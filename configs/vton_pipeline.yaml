@@ -46,6 +46,7 @@ vggt:
 qwen:
   #qwen model
   model_path: "Qwen/Qwen-Image-Edit-2511"
+  use_n_1: true
   clothing_image: "data/clothing/train/upper/short/shirts/white_plants_shirt.jpg"
   prompts:
     upper: "Replace ONLY the person's original shirt with the clothing image. Do not redesign or stylize the garment. The new garment must match the reference exactly: same colors, fabric texture, pattern/print, logos, seams/stitching, neckline/collar, sleeve length, fit, and hem/waist details. Keep background, pose, face, hair, skin, body shape, all other clothes of the person, lighting and camera exactly unchanged. Ensure temporal consistency. Produce clean boundaries where the new garment meets skin/other clothing; remove all remnants of the original shirt."

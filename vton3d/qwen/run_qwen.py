@@ -153,16 +153,47 @@ def load_pipeline(model_path: str) -> QwenImageEditPlusPipeline:
     return pipe
 
 
+import re
+from pathlib import Path
+
+def _extract_frame_number(p: Path) -> int:
+    """
+    Extract trailing number from filename like 'florian_0150.jpg' -> 150
+    If not found, returns a large number so it sorts last.
+    """
+    m = re.search(r"_([0-9]+)\.[^.]+$", p.name)
+    if not m:
+        return 10**18
+    return int(m.group(1))
+
 def get_image_files(source_dir: Path, extensions: list[str]) -> list[Path]:
     """
-    Return all image files in a directory matching the allowed extensions.
+    Return all image files in a directory matching the allowed extensions,
+    sorted by numeric frame index extracted from filename.
     """
     exts = {e.lower() for e in extensions}
-    return [
-        p for p in sorted(source_dir.iterdir())
+    files = [
+        p for p in source_dir.iterdir()
         if p.is_file() and p.suffix.lower() in exts
     ]
+    return sorted(files, key=_extract_frame_number)
 
+
+def concat_refs_side_by_side(img_left: Image.Image, img_right: Image.Image) -> Image.Image:
+    """
+    Fallback if pipeline doesn't accept 4 images:
+    create a single reference image by concatenating left/right horizontally.
+    """
+    img_left = img_left.convert("RGB")
+    img_right = img_right.convert("RGB")
+
+    h = max(img_left.height, img_right.height)
+    w = img_left.width + img_right.width
+
+    canvas = Image.new("RGB", (w, h))
+    canvas.paste(img_left, (0, 0))
+    canvas.paste(img_right, (img_left.width, 0))
+    return canvas
 
 def clear_gpu_cache():
     """
@@ -227,6 +258,15 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
     if not image_files:
         raise RuntimeError(f"No images found in {source_dir}.")
 
+    first_num = _extract_frame_number(image_files[0])
+    if first_num != 0:
+        print(
+            f"[WARN] expected front frame number 0, "
+            f"got {first_num} for {image_files[0].name}"
+        )
+
+    print("[order check]", image_files[0].name, image_files[1].name, image_files[-1].name)
+
     pipeline = load_pipeline(model_path)
     base_generator = torch.Generator(device="cpu").manual_seed(seed)
     img_count = 0
@@ -256,70 +296,305 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
     negative_prompt = negative_prompts_map.get(eval_flag, default_negative_prompt)
     print(f"negative Prompt: {negative_prompt}")
 
-    for img_path in image_files:
-        person_image = Image.open(img_path).convert("RGB")
+    use_n_1 = bool(qwen_cfg.get("use_n_1", False))
+    n = len(image_files)
+
+    predicted_cache: dict[int, Image.Image] = {}
+
+    img_count = 0
+
+    if not use_n_1:
+        for idx, img_path in enumerate(image_files):
+            person_image = Image.open(img_path).convert("RGB")
+            generator = torch.Generator(device="cpu").manual_seed(seed)
+
+            inputs = {
+                "image": [person_image, clothing_image],
+                "prompt": prompt,
+                "generator": generator,
+                "true_cfg_scale": true_cfg_scale,
+                "negative_prompt": negative_prompt,
+                "num_inference_steps": num_inference_steps,
+                "width": 704,
+                "height": 1248,
+            }
+            with torch.inference_mode():
+                output = pipeline(**inputs)
+
+            output_image = output.images[0]
+            out_path = output_dir / f"{img_path.stem}.png"
+            output_image.save(out_path)
+
+            mse_value, psnr_value, heatmap = qwen_eval_masked(
+                img1_path=str(img_path),
+                img2_path=str(out_path),
+                flag=eval_flag,
+                length_flag=length_flag,
+                estimator=estimator,
+            )
+
+            face_sim, face_in_rgb, face_out_rgb = qwen_arcface_similarity_input_vs_output(
+                img1_path=str(img_path),
+                img2_path=str(out_path),
+                device="cuda",
+                det_size=(640, 640),
+                return_faces_rgb=True,
+            )
+
+            fc_sim, masked_rgb = qwen_fashionclip_similarity_masked_clothing(
+                person_img_path=str(out_path),
+                clothing_ref_path=str(clothing_path),
+                flag=eval_flag,
+                estimator=estimator,
+                clip_device="cuda",
+                return_masked_rgb=True,
+            )
+
+            img_count += 1
+            wandb.log({
+                "qwen/input_image": wandb.Image(person_image, caption=img_path.name),
+                "qwen/output_image": wandb.Image(output_image, caption=out_path.name),
+                "qwen/image_index": img_count,
+                "qwen/use_n_1": 0,
+                f"qwen/mse_non_clothed_area_{eval_flag}_{length_flag}": mse_value,
+                f"qwen/psnr_non_clothed_area_{eval_flag}_{length_flag}": psnr_value,
+                f"qwen/heatmap_non_clothed_area_{eval_flag}_{length_flag}": wandb.Image(
+                    heatmap, caption=f"{img_path.stem}_heatmap_{eval_flag}_{length_flag}"
+                ),
+                f"qwen/fashionclip_sim_input_{eval_flag}_clothing": fc_sim,
+                f"qwen/masked_input_clothing_{eval_flag}": wandb.Image(
+                    masked_rgb, caption=f"{img_path.stem}_masked_input_{eval_flag}"
+                ),
+                "qwen/face_sim_input_vs_output": face_sim,
+            })
+
+            clear_gpu_cache()
+
+    else:
+        if n == 0:
+            return
+
+        front_idx = 0
+        front_path = image_files[front_idx]
+        front_person = Image.open(front_path).convert("RGB")
         generator = torch.Generator(device="cpu").manual_seed(seed)
-        inputs = {
-            "image": [person_image, clothing_image],
-            "prompt": prompt,
-            "generator": generator,
-            "true_cfg_scale": true_cfg_scale,
-            "negative_prompt": negative_prompt,
-            "num_inference_steps": num_inference_steps,
-            "width": 704,
-            "height": 1248,
-        }
 
         with torch.inference_mode():
-            output = pipeline(**inputs)
+            output = pipeline(
+                image=[front_person, clothing_image],
+                prompt=prompt,
+                generator=generator,
+                true_cfg_scale=true_cfg_scale,
+                negative_prompt=negative_prompt,
+                num_inference_steps=num_inference_steps,
+                width=704,
+                height=1248,
+            )
 
-        output_image = output.images[0]
-        out_path = output_dir / f"{img_path.stem}.png"
-        output_image.save(out_path)
-
-        mse_value, psnr_value, heatmap = qwen_eval_masked(
-            img1_path=str(img_path),
-            img2_path=str(out_path),
-            flag=eval_flag,
-            length_flag=length_flag,
-            estimator=estimator,
-        )
-
-        face_sim, face_in_rgb, face_out_rgb = qwen_arcface_similarity_input_vs_output(
-            img1_path=str(img_path),
-            img2_path=str(out_path),
-            device="cuda",
-            det_size=(640, 640),
-            return_faces_rgb=True,
-        )
-
-
-        fc_sim, masked_rgb = qwen_fashionclip_similarity_masked_clothing(
-            person_img_path=str(out_path),
-            clothing_ref_path=str(clothing_path),
-            flag=eval_flag,
-            estimator=estimator,
-            clip_device="cuda",
-            return_masked_rgb=True,
-        )
+        front_out = output.images[0]
+        front_out_path = output_dir / f"{front_path.stem}.png"
+        front_out.save(front_out_path)
+        predicted_cache[front_idx] = front_out
 
         img_count += 1
         wandb.log({
-            "qwen/input_image": wandb.Image(person_image, caption=img_path.name),
-            "qwen/output_image": wandb.Image(output_image, caption=out_path.name),
+            "qwen/input_image": wandb.Image(front_person, caption=front_path.name),
+            "qwen/output_image": wandb.Image(front_out, caption=front_out_path.name),
             "qwen/image_index": img_count,
-            f"qwen/mse_non_clothed_area_{eval_flag}_{length_flag}": mse_value,
-            f"qwen/psnr_non_clothed_area_{eval_flag}_{length_flag}": psnr_value,
-            f"qwen/heatmap_non_clothed_area_{eval_flag}_{length_flag}": wandb.Image(heatmap, caption=f"{img_path.stem}_heatmap_{eval_flag}_{length_flag}"),
-            f"qwen/fashionclip_sim_input_{eval_flag}_clothing": fc_sim,
-            f"qwen/masked_input_clothing_{eval_flag}": wandb.Image(
-                masked_rgb, caption=f"{img_path.stem}_masked_input_{eval_flag}"
-            ),
-            f"qwen/face_sim_input_vs_output": face_sim,
-
+            "qwen/use_n_1": 1,
+            "qwen/ref_kind": "none_front",
         })
 
         clear_gpu_cache()
+
+        l, r = 1, n - 1
+        ref_right = front_out
+        ref_left = front_out
+
+        toggle = True
+        while l < r:
+            if toggle:
+                idx = l
+                ref = ref_right
+                l += 1
+                side = "right"
+            else:
+                idx = r
+                ref = ref_left
+                r -= 1
+                side = "left"
+            toggle = not toggle
+
+            img_path = image_files[idx]
+            person_image = Image.open(img_path).convert("RGB")
+            generator = torch.Generator(device="cpu").manual_seed(seed)
+
+            wandb.log({
+                "qwen/input_image": wandb.Image(person_image, caption=img_path.name),
+                "qwen/clothing_image": wandb.Image(clothing_image, caption=clothing_path.name),
+                "qwen/use_n_1": 1,
+                f"qwen/ref_{side}": wandb.Image(ref, caption=f"ref_for_{img_path.stem}"),
+                "qwen/ref_kind": f"single_{side}",
+            })
+
+            with torch.inference_mode():
+                output = pipeline(
+                    image=[person_image, clothing_image, ref],
+                    prompt=prompt,
+                    generator=generator,
+                    true_cfg_scale=true_cfg_scale,
+                    negative_prompt=negative_prompt,
+                    num_inference_steps=num_inference_steps,
+                    width=704,
+                    height=1248,
+                )
+
+            out_img = output.images[0]
+            out_path = output_dir / f"{img_path.stem}.png"
+            out_img.save(out_path)
+            predicted_cache[idx] = out_img
+
+            if side == "right":
+                ref_right = out_img
+            else:
+                ref_left = out_img
+
+            mse_value, psnr_value, heatmap = qwen_eval_masked(
+                img1_path=str(img_path),
+                img2_path=str(out_path),
+                flag=eval_flag,
+                length_flag=length_flag,
+                estimator=estimator,
+            )
+
+            face_sim, face_in_rgb, face_out_rgb = qwen_arcface_similarity_input_vs_output(
+                img1_path=str(img_path),
+                img2_path=str(out_path),
+                device="cuda",
+                det_size=(640, 640),
+                return_faces_rgb=True,
+            )
+
+            fc_sim, masked_rgb = qwen_fashionclip_similarity_masked_clothing(
+                person_img_path=str(out_path),
+                clothing_ref_path=str(clothing_path),
+                flag=eval_flag,
+                estimator=estimator,
+                clip_device="cuda",
+                return_masked_rgb=True,
+            )
+
+            img_count += 1
+            wandb.log({
+                "qwen/output_image": wandb.Image(out_img, caption=out_path.name),
+                "qwen/image_index": img_count,
+                "qwen/use_n_1": 1,
+                f"qwen/mse_non_clothed_area_{eval_flag}_{length_flag}": mse_value,
+                f"qwen/psnr_non_clothed_area_{eval_flag}_{length_flag}": psnr_value,
+                f"qwen/heatmap_non_clothed_area_{eval_flag}_{length_flag}": wandb.Image(
+                    heatmap, caption=f"{img_path.stem}_heatmap_{eval_flag}_{length_flag}"
+                ),
+                f"qwen/fashionclip_sim_input_{eval_flag}_clothing": fc_sim,
+                f"qwen/masked_input_clothing_{eval_flag}": wandb.Image(
+                    masked_rgb, caption=f"{img_path.stem}_masked_input_{eval_flag}"
+                ),
+                "qwen/face_sim_input_vs_output": face_sim,
+            })
+
+            clear_gpu_cache()
+
+        if l == r and n > 1:
+            idx = l
+            img_path = image_files[idx]
+            person_image = Image.open(img_path).convert("RGB")
+            generator = torch.Generator(device="cpu").manual_seed(seed)
+
+            ref_combined = None
+            try:
+                with torch.inference_mode():
+                    output = pipeline(
+                        image=[person_image, clothing_image, ref_left, ref_right],
+                        prompt=prompt,
+                        generator=generator,
+                        true_cfg_scale=true_cfg_scale,
+                        negative_prompt=negative_prompt,
+                        num_inference_steps=num_inference_steps,
+                        width=704,
+                        height=1248,
+                    )
+            except Exception:
+                ref_combined = concat_refs_side_by_side(ref_left, ref_right)
+                with torch.inference_mode():
+                    output = pipeline(
+                        image=[person_image, clothing_image, ref_combined],
+                        prompt=prompt,
+                        generator=generator,
+                        true_cfg_scale=true_cfg_scale,
+                        negative_prompt=negative_prompt,
+                        num_inference_steps=num_inference_steps,
+                        width=704,
+                        height=1248,
+                    )
+
+            out_img = output.images[0]
+            out_path = output_dir / f"{img_path.stem}.png"
+            out_img.save(out_path)
+            predicted_cache[idx] = out_img
+
+            wandb.log({
+                "qwen/input_image": wandb.Image(person_image, caption=img_path.name),
+                "qwen/clothing_image": wandb.Image(clothing_image, caption=clothing_path.name),
+                "qwen/use_n_1": 1,
+                "qwen/ref_left": wandb.Image(ref_left, caption="left_chain_ref"),
+                "qwen/ref_right": wandb.Image(ref_right, caption="right_chain_ref"),
+                **({"qwen/ref_combined_fallback": wandb.Image(ref_combined, caption="combined_ref_fallback")}
+                   if ref_combined is not None else {}),
+                "qwen/ref_kind": "both_neighbors",
+            })
+
+            mse_value, psnr_value, heatmap = qwen_eval_masked(
+                img1_path=str(img_path),
+                img2_path=str(out_path),
+                flag=eval_flag,
+                length_flag=length_flag,
+                estimator=estimator,
+            )
+
+            face_sim, face_in_rgb, face_out_rgb = qwen_arcface_similarity_input_vs_output(
+                img1_path=str(img_path),
+                img2_path=str(out_path),
+                device="cuda",
+                det_size=(640, 640),
+                return_faces_rgb=True,
+            )
+
+            fc_sim, masked_rgb = qwen_fashionclip_similarity_masked_clothing(
+                person_img_path=str(out_path),
+                clothing_ref_path=str(clothing_path),
+                flag=eval_flag,
+                estimator=estimator,
+                clip_device="cuda",
+                return_masked_rgb=True,
+            )
+
+            img_count += 1
+            wandb.log({
+                "qwen/output_image": wandb.Image(out_img, caption=out_path.name),
+                "qwen/image_index": img_count,
+                "qwen/use_n_1": 1,
+                f"qwen/mse_non_clothed_area_{eval_flag}_{length_flag}": mse_value,
+                f"qwen/psnr_non_clothed_area_{eval_flag}_{length_flag}": psnr_value,
+                f"qwen/heatmap_non_clothed_area_{eval_flag}_{length_flag}": wandb.Image(
+                    heatmap, caption=f"{img_path.stem}_heatmap_{eval_flag}_{length_flag}"
+                ),
+                f"qwen/fashionclip_sim_input_{eval_flag}_clothing": fc_sim,
+                f"qwen/masked_input_clothing_{eval_flag}": wandb.Image(
+                    masked_rgb, caption=f"{img_path.stem}_masked_input_{eval_flag}"
+                ),
+                "qwen/face_sim_input_vs_output": face_sim,
+            })
+
+            clear_gpu_cache()
 
 
 def main():
