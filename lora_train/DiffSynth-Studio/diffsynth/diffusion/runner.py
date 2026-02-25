@@ -163,42 +163,76 @@ def launch_training_task(
     eval_loss_every = int(getattr(args, "eval_loss_every_steps", 0) or 0)
     eval_infer_every = int(getattr(args, "eval_infer_every_steps", 0) or 0)
 
+    optimizer.zero_grad(set_to_none=True)
+
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
+
             with accelerator.accumulate(model):
-                optimizer.zero_grad()
+
                 if dataset.load_from_cache:
                     loss = model({}, inputs=data)
                 else:
                     loss = model(data)
+
                 accelerator.backward(loss)
-                optimizer.step()
 
-                model_logger.on_step_end(accelerator, model, save_steps, loss=loss)
-                scheduler.step()
+                if accelerator.sync_gradients:
 
-            if accelerator.is_main_process and os.environ.get("WANDB_PROJECT"):
-                lr = optimizer.param_groups[0]["lr"]
-                accelerator.log(
-                    {"train/loss": loss.detach().float().item(), "train/lr": lr},
-                    step=global_step
-                )
-                if global_step % 20 == 0 and global_step > 0:
-                    dt = time.time() - t0
-                    accelerator.log({"train/steps_per_sec": 20.0 / dt}, step=global_step)
-                    t0 = time.time()
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
 
-            #val loss
-            if eval_loss_every and global_step > 0 and global_step % eval_loss_every == 0:
-                vloss = run_validation_loss()
-                if (vloss is not None) and accelerator.is_main_process and os.environ.get("WANDB_PROJECT"):
-                    accelerator.log({"val/loss": vloss}, step=global_step)
+                    model_logger.on_step_end(
+                        accelerator,
+                        model,
+                        save_steps,
+                        loss=loss
+                    )
 
-            #val inference
-            if eval_infer_every and global_step > 0 and global_step % eval_infer_every == 0:
-                run_tracked_predictions(global_step)
+                    if accelerator.is_main_process and os.environ.get("WANDB_PROJECT"):
 
-            global_step += 1
+                        lr = optimizer.param_groups[0]["lr"]
+
+                        accelerator.log(
+                            {
+                                "train/loss": loss.detach().float().item(),
+                                "train/lr": lr,
+                            },
+                            step=global_step,
+                        )
+
+                        if global_step % 20 == 0 and global_step > 0:
+                            dt = time.time() - t0
+                            accelerator.log(
+                                {"train/steps_per_sec": 20.0 / dt},
+                                step=global_step
+                            )
+                            t0 = time.time()
+
+                    #val loss
+                    if (
+                            eval_loss_every
+                            and global_step > 0
+                            and global_step % eval_loss_every == 0
+                    ):
+                        vloss = run_validation_loss()
+                        if (
+                                vloss is not None
+                                and accelerator.is_main_process
+                                and os.environ.get("WANDB_PROJECT")
+                        ):
+                            accelerator.log({"val/loss": vloss}, step=global_step)
+
+                    #val inference
+                    if (
+                            eval_infer_every
+                            and global_step > 0
+                            and global_step % eval_infer_every == 0
+                    ):
+                        run_tracked_predictions(global_step)
+
+                    global_step += 1
 
         if save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
