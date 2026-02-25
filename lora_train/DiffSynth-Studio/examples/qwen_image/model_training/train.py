@@ -122,7 +122,8 @@ def qwen_image_parser():
     parser.add_argument("--val_dataset_base_path", type=str, default=None)
     parser.add_argument("--val_dataset_metadata_path", type=str, default=None)
 
-    parser.add_argument("--eval_every_steps", type=int, default=0, help="0 disables eval")
+    parser.add_argument("--eval_loss_every_steps", type=int, default=0)
+    parser.add_argument("--eval_infer_every_steps", type=int, default=0)
     parser.add_argument("--eval_num_samples", type=int, default=5)
     parser.add_argument("--eval_sample_ids", type=str, default="", help="comma-separated sample_id values to track")
     parser.add_argument("--eval_infer_steps", type=int, default=20)

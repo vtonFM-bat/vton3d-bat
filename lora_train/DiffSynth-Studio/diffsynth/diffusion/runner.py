@@ -160,7 +160,8 @@ def launch_training_task(
     import time
     global_step = 0
     t0 = time.time()
-    eval_every = int(getattr(args, "eval_every_steps", 0) or 0) if args is not None else 0
+    eval_loss_every = int(getattr(args, "eval_loss_every_steps", 0) or 0)
+    eval_infer_every = int(getattr(args, "eval_infer_every_steps", 0) or 0)
 
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
@@ -187,10 +188,14 @@ def launch_training_task(
                     accelerator.log({"train/steps_per_sec": 20.0 / dt}, step=global_step)
                     t0 = time.time()
 
-            if eval_every and (global_step % eval_every == 0) and (global_step > 0):
+            #val loss
+            if eval_loss_every and global_step > 0 and global_step % eval_loss_every == 0:
                 vloss = run_validation_loss()
                 if (vloss is not None) and accelerator.is_main_process and os.environ.get("WANDB_PROJECT"):
                     accelerator.log({"val/loss": vloss}, step=global_step)
+
+            #val inference
+            if eval_infer_every and global_step > 0 and global_step % eval_infer_every == 0:
                 run_tracked_predictions(global_step)
 
             global_step += 1
