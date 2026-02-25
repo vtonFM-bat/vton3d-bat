@@ -165,9 +165,11 @@ def launch_training_task(
 
     optimizer.zero_grad(set_to_none=True)
 
+    accum_loss_sum = 0.0
+    accum_loss_count = 0
+
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
-
             with accelerator.accumulate(model):
 
                 if dataset.load_from_cache:
@@ -175,28 +177,27 @@ def launch_training_task(
                 else:
                     loss = model(data)
 
+                accum_loss_sum += loss.detach().float().item()
+                accum_loss_count += 1
+
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
-
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
-                    model_logger.on_step_end(
-                        accelerator,
-                        model,
-                        save_steps,
-                        loss=loss
-                    )
+                    mean_loss = accum_loss_sum / max(accum_loss_count, 1)
+                    accum_loss_sum = 0.0
+                    accum_loss_count = 0
+
+                    model_logger.on_step_end(accelerator, model, save_steps, loss=loss)
 
                     if accelerator.is_main_process and os.environ.get("WANDB_PROJECT"):
-
                         lr = optimizer.param_groups[0]["lr"]
-
                         accelerator.log(
                             {
-                                "train/loss": loss.detach().float().item(),
+                                "train/loss": mean_loss,
                                 "train/lr": lr,
                             },
                             step=global_step,
@@ -204,32 +205,17 @@ def launch_training_task(
 
                         if global_step % 20 == 0 and global_step > 0:
                             dt = time.time() - t0
-                            accelerator.log(
-                                {"train/steps_per_sec": 20.0 / dt},
-                                step=global_step
-                            )
+                            accelerator.log({"train/steps_per_sec": 20.0 / dt}, step=global_step)
                             t0 = time.time()
 
                     #val loss
-                    if (
-                            eval_loss_every
-                            and global_step > 0
-                            and global_step % eval_loss_every == 0
-                    ):
+                    if eval_loss_every and global_step > 0 and global_step % eval_loss_every == 0:
                         vloss = run_validation_loss()
-                        if (
-                                vloss is not None
-                                and accelerator.is_main_process
-                                and os.environ.get("WANDB_PROJECT")
-                        ):
+                        if (vloss is not None) and accelerator.is_main_process and os.environ.get("WANDB_PROJECT"):
                             accelerator.log({"val/loss": vloss}, step=global_step)
 
                     #val inference
-                    if (
-                            eval_infer_every
-                            and global_step > 0
-                            and global_step % eval_infer_every == 0
-                    ):
+                    if eval_infer_every and global_step > 0 and global_step % eval_infer_every == 0:
                         run_tracked_predictions(global_step)
 
                     global_step += 1
