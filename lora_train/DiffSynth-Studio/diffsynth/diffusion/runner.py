@@ -130,99 +130,104 @@ def launch_training_task(
             return Image.fromarray(heat_rgb, mode="RGB")
 
         model.eval()
-        with torch.no_grad():
-            wandb_inputs = []
-            wandb_preds = []
-            wandb_targets = []
-            wandb_heatmaps = []
+        try:
+            with torch.no_grad():
+                wandb_inputs = []
+                wandb_preds = []
+                wandb_targets = []
+                wandb_heatmaps = []
 
-            psnr_vals = []
-            psnr_per_sample = {}
+                psnr_vals = []
+                psnr_per_sample = {}
 
-            for s in tracked_val_samples:
-                sid = s.get("sample_id", "sample")
+                for s in tracked_val_samples:
+                    sid = s.get("sample_id", "sample")
 
-                target_path = base / s["image"]
-                edit_paths = [base / p for p in s["edit_image"]]
-                if len(edit_paths) == 0:
-                    continue
+                    target_path = base / s["image"]
+                    edit_paths = [base / p for p in s["edit_image"]]
+                    if len(edit_paths) == 0:
+                        continue
 
-                edit_imgs = [Image.open(p).convert("RGB") for p in edit_paths]
-                input_img = edit_imgs[0].convert("RGB")
+                    edit_imgs = [Image.open(p).convert("RGB") for p in edit_paths]
+                    input_img = edit_imgs[0].convert("RGB")
 
-                target_img = Image.open(target_path).convert("RGB")
+                    target_img = Image.open(target_path).convert("RGB")
 
-                w, h = input_img.size
-                input_img_r = input_img.resize((w, h))
-                target_img_r = target_img.resize((w, h))
-                print("before infer timesteps:", len(getattr(model.pipe.scheduler, "timesteps", [])))
+                    w, h = input_img.size
+                    input_img_r = input_img.resize((w, h))
+                    target_img_r = target_img.resize((w, h))
+                    print("before infer timesteps:", len(getattr(model.pipe.scheduler, "timesteps", [])))
 
-                try:
-                    out = model.pipe(
-                        s["prompt"],
-                        edit_image=edit_imgs,
-                        height=h,
-                        width=w,
-                        num_inference_steps=infer_steps,
-                        seed=seed,
-                        edit_image_auto_resize=True,
-                        zero_cond_t=True,
-                        cfg_scale=cfg_scale,
-                    )
-                except TypeError:
-                    out = model.pipe(
-                        s["prompt"],
-                        edit_image=edit_imgs,
-                        height=h,
-                        width=w,
-                        num_inference_steps=infer_steps,
-                        seed=seed,
-                        edit_image_auto_resize=True,
-                        zero_cond_t=True,
-                    )
+                    try:
+                        out = model.pipe(
+                            s["prompt"],
+                            edit_image=edit_imgs,
+                            height=h,
+                            width=w,
+                            num_inference_steps=infer_steps,
+                            seed=seed,
+                            edit_image_auto_resize=True,
+                            zero_cond_t=True,
+                            cfg_scale=cfg_scale,
+                        )
+                    except TypeError:
+                        out = model.pipe(
+                            s["prompt"],
+                            edit_image=edit_imgs,
+                            height=h,
+                            width=w,
+                            num_inference_steps=infer_steps,
+                            seed=seed,
+                            edit_image_auto_resize=True,
+                            zero_cond_t=True,
+                        )
 
-                print("after infer timesteps:", len(getattr(model.pipe.scheduler, "timesteps", [])))
-                if hasattr(out, "save"):
-                    pred_img = out
-                elif isinstance(out, dict) and "images" in out:
-                    pred_img = out["images"][0]
-                else:
-                    pred_img = out[0]
+                    if hasattr(out, "save"):
+                        pred_img = out
+                    elif isinstance(out, dict) and "images" in out:
+                        pred_img = out["images"][0]
+                    else:
+                        pred_img = out[0]
 
-                pred_img_r = pred_img.convert("RGB").resize((w, h))
+                    pred_img_r = pred_img.convert("RGB").resize((w, h))
 
-                mask_exclude = None
+                    mask_exclude = None
 
-                tgt01 = pil_to_np01(target_img_r)
-                pred01 = pil_to_np01(pred_img_r)
+                    tgt01 = pil_to_np01(target_img_r)
+                    pred01 = pil_to_np01(pred_img_r)
 
-                psnr_val = compute_psnr(tgt01, pred01, mask_exclude=mask_exclude)
-                psnr_vals.append(psnr_val)
-                psnr_per_sample[f"val/psnr/{sid}"] = psnr_val
+                    psnr_val = compute_psnr(tgt01, pred01, mask_exclude=mask_exclude)
+                    psnr_vals.append(psnr_val)
+                    psnr_per_sample[f"val/psnr/{sid}"] = psnr_val
 
-                heat = make_heatmap_pil(tgt01, pred01, mask_exclude=mask_exclude).resize((w, h))
+                    heat = make_heatmap_pil(tgt01, pred01, mask_exclude=mask_exclude).resize((w, h))
 
-                wandb_inputs.append(wandb.Image(input_img_r, caption=f"{sid} input @ step {step}"))
-                wandb_preds.append(
-                    wandb.Image(pred_img_r, caption=f"{sid} pred @ step {step} | PSNR={psnr_val:.2f} dB"))
-                wandb_targets.append(wandb.Image(target_img_r, caption=f"{sid} target @ step {step}"))
-                wandb_heatmaps.append(wandb.Image(heat, caption=f"{sid} heatmap @ step {step}"))
+                    wandb_inputs.append(wandb.Image(input_img_r, caption=f"{sid} input @ step {step}"))
+                    wandb_preds.append(
+                        wandb.Image(pred_img_r, caption=f"{sid} pred @ step {step} | PSNR={psnr_val:.2f} dB"))
+                    wandb_targets.append(wandb.Image(target_img_r, caption=f"{sid} target @ step {step}"))
+                    wandb_heatmaps.append(wandb.Image(heat, caption=f"{sid} heatmap @ step {step}"))
 
-            log_payload = {}
+                log_payload = {}
 
-            if len(wandb_inputs) > 0:
-                log_payload["val/input"] = wandb_inputs
-                log_payload["val/pred"] = wandb_preds
-                log_payload["val/target"] = wandb_targets
-                log_payload["val/heatmap"] = wandb_heatmaps
+                if len(wandb_inputs) > 0:
+                    log_payload["val/input"] = wandb_inputs
+                    log_payload["val/pred"] = wandb_preds
+                    log_payload["val/target"] = wandb_targets
+                    log_payload["val/heatmap"] = wandb_heatmaps
 
-            if len(psnr_vals) > 0:
-                log_payload["val/psnr_mean"] = float(np.nanmean(psnr_vals))
-                log_payload.update(psnr_per_sample)
+                if len(psnr_vals) > 0:
+                    log_payload["val/psnr_mean"] = float(np.nanmean(psnr_vals))
+                    log_payload.update(psnr_per_sample)
 
-            if len(log_payload) > 0:
-                accelerator.log(log_payload, step=step)
-
+                if len(log_payload) > 0:
+                    accelerator.log(log_payload, step=step)
+        finally:
+            try:
+                model.pipe.scheduler.set_timesteps(1000, training=True)
+            except TypeError:
+                model.pipe.scheduler.set_timesteps(1000)
+        print("after infer timesteps:", len(getattr(model.pipe.scheduler, "timesteps", [])))
         model.train()
 
 
