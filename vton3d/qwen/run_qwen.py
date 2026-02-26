@@ -14,8 +14,8 @@ from vton3d.utils.qwen_eval import (
     qwen_eval_masked,
     qwen_fashionclip_similarity_masked_clothing,
     qwen_arcface_similarity_input_vs_output,
+    qwen_fashionclip_similarity_neighbor_masked_clothing,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAPIENS_REPO = REPO_ROOT / "Sapiens-Pytorch-Inference"
@@ -110,7 +110,6 @@ def infer_eval_flag_from_clothing_path(clothing_path: Path) -> str:
         return "dress"
 
     if "lower" in parts and "upper" in parts:
-        # sehr selten, aber dann ist der Pfad ambig
         raise ValueError(
             f"Ambiguous clothing path contains both 'upper' and 'lower': {clothing_path}"
         )
@@ -120,11 +119,10 @@ def infer_eval_flag_from_clothing_path(clothing_path: Path) -> str:
     if "upper" in parts:
         return "upper"
 
-    # Optional: falls du lieber defaulten willst statt Fehler:
-    # return "upper"
     raise ValueError(
         f"Could not infer eval_flag from clothing path (missing 'upper'/'lower' folder): {clothing_path}"
     )
+
 
 def infer_length_flag_from_clothing_path(clothing_path: Path) -> str:
     parts = [p.lower() for p in clothing_path.parts]
@@ -156,7 +154,7 @@ def load_pipeline(model_path: str) -> QwenImageEditPlusPipeline:
 
 
 import re
-from pathlib import Path
+
 
 def _extract_frame_number(p: Path) -> int:
     """
@@ -167,6 +165,7 @@ def _extract_frame_number(p: Path) -> int:
     if not m:
         return 10**18
     return int(m.group(1))
+
 
 def get_image_files(source_dir: Path, extensions: list[str]) -> list[Path]:
     """
@@ -197,6 +196,7 @@ def concat_refs_side_by_side(img_left: Image.Image, img_right: Image.Image) -> I
     canvas.paste(img_right, (img_left.width, 0))
     return canvas
 
+
 def clear_gpu_cache():
     """
     Clear GPU and CPU memory caches after each image.
@@ -204,6 +204,7 @@ def clear_gpu_cache():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     gc.collect()
+
 
 def align_and_overwrite_with_optical_flow(
     aligner,
@@ -281,6 +282,7 @@ def align_and_overwrite_with_optical_flow(
         "mean_flow_magnitude": mean_mag,
     }
 
+
 def run_mof_and_get_aligned_pil(
     aligner,
     out_path: Path,
@@ -310,24 +312,12 @@ def run_mof_and_get_aligned_pil(
 
     return Image.open(out_path).convert("RGB")
 
+
 def run_qwen_from_config_dict(qwen_cfg: dict):
     """
     Run the Qwen clothing edit batch using a config dictionary (e.g. cfg['qwen']).
 
     Supports optional per-clothing-type prompts via a `prompts` dict in the config.
-
-    Example YAML structure:
-    qwen:
-      prompt: "default prompt"
-      prompts:
-        upper: "prompt for shirts/upper"
-        lower: "prompt for pants/lower"
-        dress: "prompt for dresses"
-      negative_prompt: "default neg"
-      negative_prompts:
-        upper: "neg for upper"
-        lower: "neg for lower"
-        dress: "neg for dress"
     """
     wandb.define_metric("qwen/*", step_metric="qwen/image_index")
 
@@ -336,7 +326,6 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
     clothing_path = Path(qwen_cfg["clothing_image"])
     output_dir = Path(qwen_cfg["output_dir"])
 
-    # basic defaults (these may be overridden per clothing type below)
     default_prompt = qwen_cfg.get(
         "prompt",
         (
@@ -364,6 +353,14 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
     if not image_files:
         raise RuntimeError(f"No images found in {source_dir}.")
 
+    frame_nums = [_extract_frame_number(p) for p in image_files]
+    path_by_frame = {fn: p for fn, p in zip(frame_nums, image_files)}
+    sorted_frames = sorted(path_by_frame.keys())
+
+    front_frame = sorted_frames[0]
+    last_frame = sorted_frames[-1]
+    front_img_path = path_by_frame[front_frame]
+
     first_num = _extract_frame_number(image_files[0])
     if first_num != 0:
         print(
@@ -377,7 +374,6 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
         print("[order check]", image_files[0].name)
 
     pipeline = load_pipeline(model_path)
-    base_generator = torch.Generator(device="cpu").manual_seed(seed)
     img_count = 0
     wandb.log({"qwen/clothing_image": wandb.Image(clothing_image, caption=clothing_path.name)})
 
@@ -396,7 +392,6 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
 
     print(f"[qwen] inferred eval_flag='{eval_flag}', length_flag='{length_flag}' from clothing_image='{clothing_path}'")
 
-    # choose per-clothing prompts if provided, otherwise fall back to defaults
     prompts_map = qwen_cfg.get("prompts", {}) or {}
     negative_prompts_map = qwen_cfg.get("negative_prompts", {}) or {}
 
@@ -434,8 +429,69 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
     n = len(image_files)
 
     predicted_cache: dict[int, Image.Image] = {}
-
     img_count = 0
+
+    def log_neighbor_fashionclip(curr_img_path: Path, curr_out_path: Path):
+        """
+        Online neighbor eval:
+          - compare output(f) vs output(f-1) if output(f-1) already exists
+          - front has no previous -> log NaN
+          - last frame: additionally compare output(last) vs output(front)
+        """
+        f = _extract_frame_number(curr_img_path)
+
+        if f == front_frame:
+            wandb.log({f"qwen/fc_neighbor_prev_{eval_flag}_{length_flag}": float("nan")})
+        else:
+            prev_f = f - 1
+            prev_out_path = None
+            if prev_f in path_by_frame:
+                prev_img = path_by_frame[prev_f]
+                prev_out_path = output_dir / f"{prev_img.stem}.png"
+
+            if prev_out_path is not None and prev_out_path.exists():
+                sim, m_prev, m_curr = qwen_fashionclip_similarity_neighbor_masked_clothing(
+                    person_img_a_path=str(prev_out_path),
+                    person_img_b_path=str(curr_out_path),
+                    flag=eval_flag,
+                    estimator=estimator,
+                    clip_device="cuda",
+                    return_masked_rgb=True,
+                )
+                wandb.log({
+                    f"qwen/fc_neighbor_prev_{eval_flag}_{length_flag}": sim,
+                    f"qwen/masked_neighbor_prev_{eval_flag}": wandb.Image(
+                        m_prev, caption=f"{prev_out_path.stem}_masked_prev"
+                    ),
+                    f"qwen/masked_neighbor_curr_{eval_flag}": wandb.Image(
+                        m_curr, caption=f"{curr_out_path.stem}_masked_curr"
+                    ),
+                })
+            else:
+                wandb.log({f"qwen/fc_neighbor_prev_{eval_flag}_{length_flag}": float("nan")})
+
+        if f == last_frame:
+            front_out_path = output_dir / f"{front_img_path.stem}.png"
+            if front_out_path.exists():
+                sim_ff, m_front, m_last = qwen_fashionclip_similarity_neighbor_masked_clothing(
+                    person_img_a_path=str(front_out_path),
+                    person_img_b_path=str(curr_out_path),
+                    flag=eval_flag,
+                    estimator=estimator,
+                    clip_device="cuda",
+                    return_masked_rgb=True,
+                )
+                wandb.log({
+                    f"qwen/fc_neighbor_front_{eval_flag}_{length_flag}": sim_ff,
+                    f"qwen/masked_neighbor_front_{eval_flag}": wandb.Image(
+                        m_front, caption=f"{front_out_path.stem}_masked_front"
+                    ),
+                    f"qwen/masked_neighbor_last_{eval_flag}": wandb.Image(
+                        m_last, caption=f"{curr_out_path.stem}_masked_last"
+                    ),
+                })
+            else:
+                wandb.log({f"qwen/fc_neighbor_front_{eval_flag}_{length_flag}": float("nan")})
 
     if not use_n_1:
         for idx, img_path in enumerate(image_files):
@@ -458,6 +514,9 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
             output_image = output.images[0]
             out_path = output_dir / f"{img_path.stem}.png"
             output_image.save(out_path)
+
+            # neighbor eval (sequential by filename number)
+            log_neighbor_fashionclip(curr_img_path=img_path, curr_out_path=out_path)
 
             mse_value, psnr_value, heatmap = qwen_eval_masked(
                 img1_path=str(img_path),
@@ -529,7 +588,6 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
         front_out_path = output_dir / f"{front_path.stem}.png"
         front_out_raw.save(front_out_path)
 
-        # raw log (qwen)
         img_count += 1
         wandb.log({
             "qwen/input_image": wandb.Image(front_person, caption=front_path.name),
@@ -552,8 +610,10 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
             except Exception as e:
                 print(f"[WARN] optical flow failed for {front_out_path.name}: {e}")
 
-        predicted_cache[front_idx] = front_for_ref
+        # neighbor eval for front (prev=NaN)
+        log_neighbor_fashionclip(curr_img_path=front_path, curr_out_path=front_out_path)
 
+        predicted_cache[front_idx] = front_for_ref
         clear_gpu_cache()
 
         l, r = 1, n - 1
@@ -614,6 +674,9 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
                     )
                 except Exception as e:
                     print(f"[WARN] optical flow failed for {out_path.name}: {e}")
+
+            # neighbor eval (sequential by filename number)
+            log_neighbor_fashionclip(curr_img_path=img_path, curr_out_path=out_path)
 
             predicted_cache[idx] = out_img_for_ref
 
@@ -714,6 +777,9 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
                     )
                 except Exception as e:
                     print(f"[WARN] optical flow failed for {out_path.name}: {e}")
+
+            # neighbor eval (sequential by filename number)
+            log_neighbor_fashionclip(curr_img_path=img_path, curr_out_path=out_path)
 
             predicted_cache[idx] = out_img_for_ref
 
