@@ -132,13 +132,8 @@ def launch_training_task(
         model.eval()
         try:
             with torch.no_grad():
-                wandb_inputs = []
-                wandb_preds = []
-                wandb_targets = []
-                wandb_heatmaps = []
-
+                log_payload = {}
                 psnr_vals = []
-                psnr_per_sample = {}
 
                 for s in tracked_val_samples:
                     sid = s.get("sample_id", "sample")
@@ -149,13 +144,11 @@ def launch_training_task(
                         continue
 
                     edit_imgs = [Image.open(p).convert("RGB") for p in edit_paths]
-                    input_img = edit_imgs[0].convert("RGB")
-
                     target_img = Image.open(target_path).convert("RGB")
 
-                    w, h = input_img.size
-                    input_img_r = input_img.resize((w, h))
-                    target_img_r = target_img.resize((w, h))
+                    w, h = target_img.size
+                    target_img_r = target_img
+
                     print("before infer timesteps:", len(getattr(model.pipe.scheduler, "timesteps", [])))
 
                     try:
@@ -191,34 +184,32 @@ def launch_training_task(
 
                     pred_img_r = pred_img.convert("RGB").resize((w, h))
 
-                    mask_exclude = None
-
                     tgt01 = pil_to_np01(target_img_r)
                     pred01 = pil_to_np01(pred_img_r)
 
-                    psnr_val = compute_psnr(tgt01, pred01, mask_exclude=mask_exclude)
+                    psnr_val = compute_psnr(tgt01, pred01, mask_exclude=None)
                     psnr_vals.append(psnr_val)
-                    psnr_per_sample[f"val/psnr/{sid}"] = psnr_val
 
-                    heat = make_heatmap_pil(tgt01, pred01, mask_exclude=mask_exclude).resize((w, h))
+                    heat = make_heatmap_pil(tgt01, pred01, mask_exclude=None).resize((w, h))
 
-                    wandb_inputs.append(wandb.Image(input_img_r, caption=f"{sid} input @ step {step}"))
-                    wandb_preds.append(
-                        wandb.Image(pred_img_r, caption=f"{sid} pred @ step {step} | PSNR={psnr_val:.2f} dB"))
-                    wandb_targets.append(wandb.Image(target_img_r, caption=f"{sid} target @ step {step}"))
-                    wandb_heatmaps.append(wandb.Image(heat, caption=f"{sid} heatmap @ step {step}"))
+                    log_payload[f"val/input/{sid}"] = [
+                        wandb.Image(img.convert("RGB").resize((w, h)), caption=f"{sid} edit[{ei}] @ step {step}")
+                        for ei, img in enumerate(edit_imgs)
+                    ]
 
-                log_payload = {}
-
-                if len(wandb_inputs) > 0:
-                    log_payload["val/input"] = wandb_inputs
-                    log_payload["val/pred"] = wandb_preds
-                    log_payload["val/target"] = wandb_targets
-                    log_payload["val/heatmap"] = wandb_heatmaps
+                    log_payload[f"val/pred/{sid}"] = wandb.Image(
+                        pred_img_r, caption=f"{sid} pred @ step {step} | PSNR={psnr_val:.2f} dB"
+                    )
+                    log_payload[f"val/target/{sid}"] = wandb.Image(
+                        target_img_r, caption=f"{sid} target @ step {step}"
+                    )
+                    log_payload[f"val/heatmap/{sid}"] = wandb.Image(
+                        heat, caption=f"{sid} heatmap @ step {step}"
+                    )
+                    log_payload[f"val/psnr/{sid}"] = psnr_val
 
                 if len(psnr_vals) > 0:
                     log_payload["val/psnr_mean"] = float(np.nanmean(psnr_vals))
-                    log_payload.update(psnr_per_sample)
 
                 if len(log_payload) > 0:
                     accelerator.log(log_payload, step=step)
