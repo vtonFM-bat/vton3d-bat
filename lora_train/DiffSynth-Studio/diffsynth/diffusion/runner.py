@@ -264,6 +264,7 @@ def launch_training_task(
                             {
                                 "train/loss": mean_loss,
                                 "train/lr": lr,
+                                "train/epoch": epoch_id,
                             },
                             step=global_step,
                         )
