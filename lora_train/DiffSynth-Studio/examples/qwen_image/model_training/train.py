@@ -3,6 +3,7 @@ from diffsynth.core import UnifiedDataset
 from diffsynth.pipelines.qwen_image import QwenImagePipeline, ModelConfig
 from diffsynth.diffusion import *
 from diffsynth.core.data.operators import *
+import torch.nn as nn
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -22,6 +23,10 @@ class QwenImageTrainingModule(DiffusionTrainingModule):
         device="cpu",
         task="sft",
         zero_cond_t=False,
+        use_3d_loss=False,
+        three_d_loss_weight=1.0,
+        three_d_qwen_layers="48",
+        three_d_timestep_max=None,
     ):
         super().__init__()
         # Load models
@@ -58,6 +63,30 @@ class QwenImageTrainingModule(DiffusionTrainingModule):
         self.extra_inputs = extra_inputs.split(",") if extra_inputs is not None else []
         self.fp8_models = fp8_models
         self.task = task
+        from vggt_align_loss import VGGTGeometryForcingLoss
+
+        self.use_3d_loss = False  # default
+        self.three_d_loss_weight = 1.0
+        self.three_d_qwen_layers = []
+        self._qwen_hook_handles = []
+        self._qwen_hidden_cache = {}
+        self.use_3d_loss = use_3d_loss
+        self.three_d_loss_weight = three_d_loss_weight
+        self.three_d_qwen_layers = [int(x) for x in three_d_qwen_layers.split(",") if x.strip()]
+
+        if self.use_3d_loss:
+            self.vggt_loss = VGGTGeometryForcingLoss(
+                device=self.pipe.device,
+                dtype=self.pipe.torch_dtype,
+                qwen_layer_indices=self.three_d_qwen_layers,
+                timestep_max_for_3d=three_d_timestep_max,
+            )
+            self._install_qwen_hooks()
+        else:
+            self.vggt_loss = None
+
+        # diese Werte kommen aus args, du kannst sie im __init__ als Parameter reinreichen (empfohlen)
+
         self.zero_cond_t = zero_cond_t
 
         self.task_to_loss = {
@@ -103,14 +132,93 @@ class QwenImageTrainingModule(DiffusionTrainingModule):
         return inputs_shared, inputs_posi, inputs_nega
 
     def forward(self, data, inputs=None):
+        if self.use_3d_loss:
+            self._qwen_hidden_cache.clear()
         if inputs is None:
             inputs = self.get_pipeline_inputs(data)
         inputs = self.transfer_data_to_device(inputs, self.pipe.device, self.pipe.torch_dtype)
         for unit in self.pipe.units:
             inputs = self.pipe.unit_runner(unit, self.pipe, *inputs)
         loss = self.task_to_loss[self.task](self.pipe, *inputs)
+
+        if self.use_3d_loss and len(self._qwen_hidden_cache) > 0:
+            k = next(iter(self._qwen_hidden_cache))
+            if hasattr(torch,
+                       "distributed") and torch.distributed.is_available() and torch.distributed.is_initialized():
+                pass
+            else:
+                print("QWEN HOOK SHAPE:", k, self._qwen_hidden_cache[k].shape)
+
+        if self.use_3d_loss and self.vggt_loss is not None:
+            gt = data.get("image", None)
+
+            if gt is not None:
+                gt_t = self.transfer_data_to_device(gt, self.pipe.device, self.pipe.torch_dtype)
+
+                if gt_t.dim() == 4:
+                    gt_t = gt_t.unsqueeze(1)
+                elif gt_t.dim() == 5:
+                    pass
+                else:
+                    pass
+
+                t = None
+
+                qwen_feats = dict(self._qwen_hidden_cache)
+                if len(qwen_feats) > 0:
+                    loss_3d = self.vggt_loss(qwen_feats, gt_images_btc=gt_t, timesteps=t)
+                    loss = loss + (self.three_d_loss_weight * loss_3d)
         return loss
 
+    def _install_qwen_hooks(self):
+        transformer = None
+        candidates = []
+        for name, m in self.pipe.named_modules():
+            if name.endswith("transformer") or "transformer" in name or "denoiser" in name:
+                candidates.append((name, m))
+
+        if len(candidates) > 0:
+            candidates.sort(key=lambda x: sum(p.numel() for p in x[1].parameters()), reverse=True)
+            transformer = candidates[0][1]
+
+        if transformer is None:
+            raise RuntimeError("Could not locate transformer/denoiser module to hook for 3d loss.")
+
+        blocks = None
+        for attr in ["blocks", "layers", "transformer_blocks", "h", "model", "module"]:
+            if hasattr(transformer, attr):
+                obj = getattr(transformer, attr)
+                if isinstance(obj, (nn.ModuleList, list)) and len(obj) > 0:
+                    blocks = obj
+                    break
+
+        if blocks is None:
+            for _, m in transformer.named_modules():
+                if isinstance(m, nn.ModuleList) and len(m) >= max(self.three_d_qwen_layers) + 1:
+                    blocks = m
+                    break
+
+        if blocks is None:
+            raise RuntimeError("Could not locate transformer blocks ModuleList for hooking.")
+
+        self._qwen_hidden_cache = {}
+        self._qwen_hook_handles = []
+
+        def make_hook(layer_idx: int):
+            def hook_fn(module, inp, out):
+                # out kann tuple sein – wir nehmen den ersten Tensor
+                if isinstance(out, (tuple, list)):
+                    out0 = out[0]
+                else:
+                    out0 = out
+                self._qwen_hidden_cache[layer_idx] = out0
+            return hook_fn
+
+        for li in self.three_d_qwen_layers:
+            if li < 0 or li >= len(blocks):
+                raise ValueError(f"Requested qwen layer {li} out of range (0..{len(blocks)-1}).")
+            h = blocks[li].register_forward_hook(make_hook(li))
+            self._qwen_hook_handles.append(h)
 
 def qwen_image_parser():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -135,6 +243,13 @@ def qwen_image_parser():
     parser.add_argument("--eval_max_val_batches", type=int, default=0, help="0 = full val")
 
     parser.add_argument("--lora_dropout", type=float, default=0.0, help="LoRA dropout (PEFT lora_dropout).")
+
+    parser.add_argument("--use_3d_loss", default=False, action="store_true")
+    parser.add_argument("--three_d_loss_weight", type=float, default=1.0)
+    parser.add_argument("--three_d_qwen_layers", type=str, default="48",
+                        help="comma-separated transformer block indices")
+    parser.add_argument("--three_d_timestep_max", type=int, default=None,
+                        help="optional: only apply 3d loss when t<=this")
     # -----------------------------------------
 
     return parser
@@ -233,6 +348,10 @@ if __name__ == "__main__":
         device="cpu" if args.initialize_model_on_cpu else accelerator.device,
         zero_cond_t=args.zero_cond_t,
         lora_dropout=args.lora_dropout,
+        use_3d_loss=args.use_3d_loss,
+        three_d_loss_weight = args.three_d_loss_weight,
+        three_d_qwen_layers = args.three_d_qwen_layers,
+        three_d_timestep_max = args.three_d_timestep_max,
     )
 
     model_logger = ModelLogger(
