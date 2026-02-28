@@ -70,9 +70,11 @@ def launch_training_task(
                 if max_batches and bi >= max_batches:
                     break
                 if val_dataset.load_from_cache:
-                    vloss = model({}, inputs=vdata)
+                    out = model({}, inputs=vdata)
+                    vloss = out[0] if isinstance(out, (tuple, list)) else out
                 else:
-                    vloss = model(vdata)
+                    out = model(vdata)
+                    vloss = out[0] if isinstance(out, (tuple, list)) else out
                 total += vloss.detach().float().item()
                 n += 1
 
@@ -233,17 +235,33 @@ def launch_training_task(
     accum_loss_sum = 0.0
     accum_loss_count = 0
 
+    accum_fm_sum = 0.0
+    accum_3d_sum = 0.0
+    accum_3d_raw_sum = 0.0
+
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
             with accelerator.accumulate(model):
 
                 if dataset.load_from_cache:
-                    loss = model({}, inputs=data)
+                    out = model({}, inputs=data)
                 else:
-                    loss = model(data)
+                    out = model(data)
+
+                if isinstance(out, (tuple, list)) and len(out) == 2 and isinstance(out[1], dict):
+                    loss, logs = out
+                else:
+                    loss, logs = out, {}
 
                 accum_loss_sum += loss.detach().float().item()
                 accum_loss_count += 1
+
+                if "loss_main" in logs:
+                    accum_fm_sum += logs["loss_main"].detach().float().item()
+                if "loss_3d_weighted" in logs:
+                    accum_3d_sum += logs["loss_3d_weighted"].detach().float().item()
+                if "loss_3d_raw" in logs:
+                    accum_3d_raw_sum += logs["loss_3d_raw"].detach().float().item()
 
                 accelerator.backward(loss)
 
@@ -253,16 +271,24 @@ def launch_training_task(
                     optimizer.zero_grad(set_to_none=True)
 
                     mean_loss = accum_loss_sum / max(accum_loss_count, 1)
-                    accum_loss_sum = 0.0
+                    mean_fm = accum_fm_sum / max(accum_loss_count, 1)
+                    mean_3d = accum_3d_sum / max(accum_loss_count, 1)
+                    mean_3d_raw = accum_3d_raw_sum / max(accum_loss_count, 1)
+
+                    accum_loss_sum = accum_fm_sum = accum_3d_sum = accum_3d_raw_sum = 0.0
                     accum_loss_count = 0
 
                     model_logger.on_step_end(accelerator, model, save_steps, loss=loss)
 
                     if accelerator.is_main_process and os.environ.get("WANDB_PROJECT"):
                         lr = optimizer.param_groups[0]["lr"]
+
                         accelerator.log(
                             {
                                 "train/loss": mean_loss,
+                                "train/loss_fm": mean_fm,
+                                "train/loss_3d": mean_3d,
+                                "train/loss_3d_raw": mean_3d_raw,
                                 "train/lr": lr,
                                 "train/epoch": epoch_id,
                             },
