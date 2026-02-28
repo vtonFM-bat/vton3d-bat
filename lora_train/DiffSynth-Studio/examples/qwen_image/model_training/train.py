@@ -150,10 +150,28 @@ class QwenImageTrainingModule(DiffusionTrainingModule):
                 print("QWEN HOOK SHAPE:", k, self._qwen_hidden_cache[k].shape)
 
         if self.use_3d_loss and self.vggt_loss is not None:
-            gt = data.get("image", None)
+            from PIL import Image
+            import numpy as np
 
+            def pil_to_tensor01(img: Image.Image) -> torch.Tensor:
+                arr = np.asarray(img.convert("RGB")).astype("float32") / 255.0
+                t = torch.from_numpy(arr).permute(2, 0, 1)
+                return t
+
+            gt = data.get("image", None)
             if gt is not None:
-                gt_t = self.transfer_data_to_device(gt, self.pipe.device, self.pipe.torch_dtype)
+                if isinstance(gt, Image.Image):
+                    gt_t = pil_to_tensor01(gt).unsqueeze(0)
+                elif torch.is_tensor(gt):
+                    gt_t = gt
+                    if gt_t.dim() == 3:
+                        gt_t = gt_t.unsqueeze(0)
+                elif isinstance(gt, list) and len(gt) > 0 and isinstance(gt[0], Image.Image):
+                    gt_t = pil_to_tensor01(gt[0]).unsqueeze(0)
+                else:
+                    raise TypeError(f"Unsupported gt type: {type(gt)}")
+
+                gt_t = gt_t.to(device=self.pipe.device, dtype=self.pipe.torch_dtype)
 
                 if gt_t.dim() == 4:
                     gt_t = gt_t.unsqueeze(1)
