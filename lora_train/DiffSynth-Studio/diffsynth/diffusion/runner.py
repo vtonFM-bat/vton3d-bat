@@ -301,7 +301,15 @@ def launch_training_task(
                             t0 = time.time()
 
                     #val loss
-                    if eval_loss_every and global_step > 0 and global_step % eval_loss_every == 0:
+                    should_valloss = False
+
+                    if global_step in {50, 100, 150}:
+                        should_valloss = True
+
+                    if eval_loss_every and global_step > 0 and (global_step % eval_loss_every == 0):
+                        should_valloss = True
+
+                    if should_valloss:
                         vloss = run_validation_loss()
                         if (vloss is not None) and accelerator.is_main_process and os.environ.get("WANDB_PROJECT"):
                             accelerator.log({"val/loss": vloss}, step=global_step)
