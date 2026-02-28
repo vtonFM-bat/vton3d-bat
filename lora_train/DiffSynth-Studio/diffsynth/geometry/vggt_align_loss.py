@@ -3,9 +3,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+import os
 
-# nutzt deinen VGGT-Code (wie im GeometryForcing-Repo)
-from external.vggt.models.vggt import VGGT  # ggf. Pfad anpassen
+from external.vggt.models.vggt import VGGT
 
 def mean_flat(x: torch.Tensor) -> torch.Tensor:
     return torch.mean(x, dim=list(range(1, len(x.size()))))
@@ -132,6 +132,22 @@ class VGGTGeometryForcingLoss(nn.Module):
         self.projectors[key] = proj.to(device=next(self.parameters()).device, dtype=self.qwen_dtype)
         return self.projectors[key]
 
+    def _tokens_to_grid(self, hid: torch.Tensor) -> torch.Tensor:
+        """
+        hid: [B, N, D]
+        returns: [B, D, H, W]  (H*W = largest square <= N, using LAST H*W tokens)
+        """
+        b, n, d = hid.shape
+        side = int((n ** 0.5))
+        hw = side * side
+        if hw < 1:
+            raise RuntimeError(f"Cannot infer square grid from token length n={n}")
+
+        # take last H*W tokens as image tokens
+        img_tokens = hid[:, -hw:, :]  # [B, hw, D]
+        grid = rearrange(img_tokens, "b (h w) d -> b d h w", h=side, w=side)  # [B,D,H,W]
+        return grid
+
     def forward(
         self,
         qwen_hidden_by_layer: dict[int, torch.Tensor],
@@ -164,28 +180,31 @@ class VGGTGeometryForcingLoss(nn.Module):
         for layer_idx, hid in qwen_hidden_by_layer.items():
             if hid.dim() == 5:
                 hid = rearrange(hid, "b t c h w -> (b t) c h w")
+
+            if hid.dim() == 3:
+                hid = self._tokens_to_grid(hid)
+
+            if os.environ.get("RANK", "0") == "0":
+                print("GRID HID:", hid.shape)  # sollte [1, 3072, 26, 26] sein
+
             if hid.dim() != 4:
-                raise RuntimeError(f"Qwen hidden for layer {layer_idx} must be 4D/5D feature map, got {hid.shape}")
+                raise RuntimeError(f"Qwen hidden for layer {layer_idx} must be 3D/4D/5D, got {hid.shape}")
 
             proj = self._get_or_make_projector(layer_idx, in_channels=hid.shape[1])
-            pred = proj(hid, out_hw=self.vggt_target_hw)  # [BT,24,Ht,Wt]
+            pred = proj(hid, out_hw=self.vggt_target_hw)
 
-            # map-wise cosine (wie Repo)
             pred_flat = rearrange(pred, "b c h w -> b c (h w)")
             tgt_flat  = rearrange(target, "b c h w -> b c (h w)")
 
             pred_n = F.normalize(pred_flat, p=2, dim=-1)
             tgt_n  = F.normalize(tgt_flat, p=2, dim=-1)
 
-            # -(cosine) als loss: elementwise * und sum über S und C
-            loss_map = -(pred_n * tgt_n).sum(dim=-1)  # [BT,24]
-            loss = loss_map.sum(dim=-1)               # [BT]
+            loss_map = -(pred_n * tgt_n).sum(dim=-1)
+            loss = loss_map.sum(dim=-1)
             total = total + loss.mean()
             count += 1
 
-            # optional scale recon (wie Repo-Idee)
             if self.use_scale_recon and self.scale_head is not None:
-                # pred_n zurück zu [BT,24,Ht,Wt] für recon
                 pred_n_img = rearrange(pred_n, "b c (h w) -> b c h w", h=self.vggt_target_hw[0])
                 recon = self.scale_head(pred_n_img)
                 total = total + self.scale_lambda * F.mse_loss(recon, target)
