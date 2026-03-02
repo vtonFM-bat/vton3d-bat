@@ -97,6 +97,19 @@ def parse_args() -> argparse.Namespace:
         help="File extensions treated as images."
     )
 
+    parser.add_argument(
+        "--use_lora",
+        type=str,
+        default="",
+        help="Path to LoRA .safetensors (empty => disable)."
+    )
+    parser.add_argument(
+        "--lora_scale",
+        type=float,
+        default=1.0,
+        help="LoRA scale (only if use_lora is set)."
+    )
+
     return parser.parse_args()
 
 
@@ -141,9 +154,12 @@ def infer_length_flag_from_clothing_path(clothing_path: Path) -> str:
     )
 
 
-def load_pipeline(model_path: str) -> QwenImageEditPlusPipeline:
+from pathlib import Path
+
+def load_pipeline(model_path: str, use_lora: str = "", lora_scale: float = 1.0) -> QwenImageEditPlusPipeline:
     """
     Load the Qwen Image Edit pipeline with CPU offload enabled.
+    Optionally load a LoRA adapter from a .safetensors file or a directory/repo.
     """
     pipe = QwenImageEditPlusPipeline.from_pretrained(
         model_path,
@@ -151,6 +167,42 @@ def load_pipeline(model_path: str) -> QwenImageEditPlusPipeline:
     )
     pipe.set_progress_bar_config(disable=None)
     pipe.enable_model_cpu_offload()
+
+    # LoRA optional
+    use_lora = (use_lora or "").strip()
+    if use_lora != "":
+        lora_path = Path(use_lora).expanduser().resolve()
+        adapter_name = "lora"
+
+        if lora_path.is_file():
+            pipe.load_lora_weights(
+                str(lora_path.parent),
+                weight_name=lora_path.name,
+                adapter_name=adapter_name,
+            )
+        else:
+            pipe.load_lora_weights(
+                str(lora_path),
+                adapter_name=adapter_name,
+            )
+
+        try:
+            pipe.set_adapters(adapter_name, adapter_weights=lora_scale)
+        except Exception:
+            pass
+
+        try:
+            pipe.fuse_lora(lora_scale=lora_scale)
+        except Exception:
+            try:
+                pipe.fuse_lora()
+            except Exception:
+                pass
+
+        print(f"[qwen] LoRA enabled: {use_lora} (scale={lora_scale})")
+    else:
+        print("[qwen] LoRA disabled (base model only)")
+
     return pipe
 
 
@@ -375,7 +427,10 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
     else:
         print("[order check]", image_files[0].name)
 
-    pipeline = load_pipeline(model_path)
+    use_lora = qwen_cfg.get("use_lora", "")
+    lora_scale = float(qwen_cfg.get("lora_scale", 1.0))
+    pipeline = load_pipeline(model_path, use_lora=use_lora, lora_scale=lora_scale)
+
     img_count = 0
     wandb.log({"qwen/clothing_image": wandb.Image(clothing_image, caption=clothing_path.name)})
 
@@ -902,6 +957,8 @@ def main():
         "num_inference_steps": args.num_inference_steps,
         "seed": args.seed,
         "extensions": args.extensions,
+        "use_lora": args.use_lora,
+        "lora_scale": args.lora_scale,
     }
     run_qwen_from_config_dict(qwen_cfg)
 

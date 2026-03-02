@@ -46,6 +46,9 @@ vggt:
 qwen:
   #qwen model
   model_path: "Qwen/Qwen-Image-Edit-2511"
+  use_lora: ""
+  lora_scale: 1.0
+
   use_n_1: true
   clothing_image: "data/clothing/train/upper/short/shirts/white_plants_shirt.jpg"
   prompts:
