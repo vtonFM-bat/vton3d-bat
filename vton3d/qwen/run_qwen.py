@@ -562,8 +562,19 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
         aligner = MaskedOpticalFlow(mof_cfg)
 
     use_n_1 = bool(qwen_cfg.get("use_n_1", False))
-    solo_gen_every = int(qwen_cfg.get("solo_gen_every", 0) or 0)
     n = len(image_files)
+
+    ref_frames = int(qwen_cfg.get("solo_gen_ref_frames", 30) or 30)
+    ref_every = int(qwen_cfg.get("solo_gen_ref_every", 0) or 0)
+
+    if ref_every <= 0:
+        solo_gen_every = 0
+    else:
+        import math
+
+        solo_gen_every = max(1, int(math.ceil(ref_every * (n / ref_frames))))
+
+    print(f"[qwen] solo_gen_every(auto)={solo_gen_every} (n={n}, ref={ref_every}@{ref_frames})")
 
     predicted_cache: dict[int, Image.Image] = {}
     img_count = 0

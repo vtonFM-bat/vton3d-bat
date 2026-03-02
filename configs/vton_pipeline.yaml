@@ -50,7 +50,8 @@ qwen:
   lora_scale: 1.0
 
   use_n_1: true
-  solo_gen_every: 8
+  solo_gen_ref_frames: 30
+  solo_gen_ref_every: 11
 
   clothing_image: "data/clothing/train/upper/short/shirts/white_plants_shirt.jpg"
   prompts:
