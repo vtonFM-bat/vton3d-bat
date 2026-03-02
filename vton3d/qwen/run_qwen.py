@@ -185,11 +185,7 @@ def load_pipeline(model_path: str, use_lora: str = "", lora_scale: float = 1.0) 
             sd = load_file(str(lora_path))
 
             #remove extra training heads
-            drop_prefixes = (
-                "vggt_loss.",
-                "loss.",
-                "projector.",
-            )
+            drop_prefixes = ("vggt_loss.",)
 
             keys_before = list(sd.keys())
             sd_filtered = {k: v for k, v in sd.items() if not k.startswith(drop_prefixes)}
@@ -566,6 +562,7 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
         aligner = MaskedOpticalFlow(mof_cfg)
 
     use_n_1 = bool(qwen_cfg.get("use_n_1", False))
+    solo_gen_every = int(qwen_cfg.get("solo_gen_every", 0) or 0)
     n = len(image_files)
 
     predicted_cache: dict[int, Image.Image] = {}
@@ -774,6 +771,16 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
             toggle = not toggle
 
             img_path = image_files[idx]
+
+            frame_number = _extract_frame_number(img_path)
+
+            pos = bisect.bisect_left(sorted_frames, frame_number)
+            do_solo = (
+                    solo_gen_every > 0
+                    and frame_number != front_frame
+                    and pos % solo_gen_every == 0
+            )
+
             person_image = Image.open(img_path).convert("RGB")
             generator = torch.Generator(device="cpu").manual_seed(seed)
 
@@ -785,17 +792,31 @@ def run_qwen_from_config_dict(qwen_cfg: dict):
                 "qwen/ref_kind": f"single_{side}",
             })
 
-            with torch.inference_mode():
-                output = pipeline(
-                    image=[person_image, clothing_image, ref],
-                    prompt=build_prompt("single", use_n_1),
-                    generator=generator,
-                    true_cfg_scale=true_cfg_scale,
-                    negative_prompt=negative_prompt,
-                    num_inference_steps=num_inference_steps,
-                    width=704,
-                    height=1248,
-                )
+            if do_solo:
+                print(f"[qwen] SOLO generation for frame {frame_number}")
+                with torch.inference_mode():
+                    output = pipeline(
+                        image=[person_image, clothing_image],
+                        prompt=build_prompt("front", use_n_1),
+                        generator=generator,
+                        true_cfg_scale=true_cfg_scale,
+                        negative_prompt=negative_prompt,
+                        num_inference_steps=num_inference_steps,
+                        width=704,
+                        height=1248,
+                    )
+            else:
+                with torch.inference_mode():
+                    output = pipeline(
+                        image=[person_image, clothing_image, ref],
+                        prompt=build_prompt("single", use_n_1),
+                        generator=generator,
+                        true_cfg_scale=true_cfg_scale,
+                        negative_prompt=negative_prompt,
+                        num_inference_steps=num_inference_steps,
+                        width=704,
+                        height=1248,
+                    )
 
             out_img_raw = output.images[0]
             out_path = output_dir / f"{img_path.stem}.png"
