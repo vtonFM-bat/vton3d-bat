@@ -1,10 +1,10 @@
 paths:
-  scene_dir: "data/train/florian/"
+  scene_dir: "data/train/jan/"
   runs_root: "data/train/florian/sweep_runs"   # optional
 
 wandb:
-  project: "vton_test_prompts"
-  run_name: "vton_person_prompt1"
+  project: "vton_lora_exp"
+  run_name: "vton_no_lora"
   mode: "online"
 
 pipeline:
@@ -21,7 +21,7 @@ pipeline:
 
 extract_frames:
   videos_dir: "video"
-  video_name: "florian_shirt.MOV"        # optional: if not specified, process first video in videos_dir
+  video_name: "jan_fs.MOV"        # optional: if not specified, process first video in videos_dir
   num_frames: 30
   start: 0
   end: null
@@ -50,8 +50,6 @@ qwen:
   lora_scale: 1.0
 
   use_n_1: true
-  solo_gen_ref_frames: 30
-  solo_gen_ref_every: 11
 
   clothing_image: "data/clothing/train/upper/short/shirts/white_plants_shirt.jpg"
   prompts:
@@ -76,7 +74,7 @@ masked_optical_flow:
   sapiens_variant: "SEGMENTATION_1B"
   target_h: 1248
   target_w: 704
-  dilate_px: 15
+  dilate_px: 17
   feather_sigma: 7.0
   ecc_n_iter: 400
   ecc_eps: 1e-7

@@ -5,7 +5,7 @@ SBATCH_SCRIPT="./run_pipeline.sh"
 BASE_YAML="configs/vton_pipeline.yaml"
 
 # Ordner vorbereiten
-mkdir -p configs/optical_flow_yamls logs
+mkdir -p configs/no_lora_yamls logs
 
 # Person -> Video
 declare -A VIDEO=(
@@ -37,11 +37,11 @@ for person in florian can jan petra; do
     fi
 
     scene_dir="data/train/${person}/"
-    run_name="vton_opflow_${person}_${cloth}"
+    run_name="no_lora_${person}_${cloth}"
     video_name="${VIDEO[$person]}"
     clothing_image="${CLOTHING_PATH[$cloth]}"
 
-    out_cfg="configs/optical_flow_yamls/${run_name}.yaml"
+    out_cfg="configs/no_lora_yamls/${run_name}.yaml"
 
     # Base-YAML kopieren
     cp "$BASE_YAML" "$out_cfg"
