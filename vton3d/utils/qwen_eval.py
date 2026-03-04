@@ -266,6 +266,156 @@ _ARCFACE_CACHE = {
     "det_size": None,
 }
 
+
+from typing import Optional, Tuple, Dict
+
+_FC_EMB_CACHE: Dict[Tuple[str, str, str], torch.Tensor] = {}
+# key: (abs_img_path, flag, clip_device) -> embedding
+
+def _mask_person_image_to_clothing_white_bg(
+    person_img_path: str,
+    flag: str,
+    estimator,
+) -> Tuple[Image.Image, np.ndarray]:
+    """
+    Exactly the same masking idea as qwen_fashionclip_similarity_masked_clothing():
+    - segment clothing class in PERSON image
+    - keep clothing pixels, set everything else to white
+    Returns:
+      pil_masked (RGB)
+      masked_rgb (HxWx3 uint8 RGB)
+    """
+    flag = flag.lower()
+    if flag not in ("upper", "lower", "dress"):
+        raise ValueError(f"Invalid flag '{flag}', expected 'upper', 'lower' or 'dress'.")
+
+    img_bgr = cv2.imread(person_img_path)
+    if img_bgr is None:
+        raise FileNotFoundError(f"Could not load image: {person_img_path}")
+
+    seg_map = estimator(img_bgr).astype(np.int32)
+
+    # IMPORTANT: keep the logic consistent with your current example.
+    # In your current function, 'dress' maps to "Upper Clothing".
+    # If you want dress to be (upper OR lower), change here (see comment below).
+    if flag == "dress":
+        clothing_names = ["Upper Clothing"]  # keep identical behavior to your current example
+        # If you want dress=upper+lower instead, do:
+        # clothing_names = ["Upper Clothing", "Lower Clothing"]
+    else:
+        clothing_names = ["Upper Clothing"] if flag == "upper" else ["Lower Clothing"]
+
+    clothing_indices = []
+    for name in clothing_names:
+        if name not in classes:
+            raise ValueError(f"Class '{name}' not found in classes list.")
+        clothing_indices.append(classes.index(name))
+
+    mask = np.isin(seg_map, clothing_indices)
+
+    white_bgr = img_bgr.copy()
+    white_bgr[~mask] = (255, 255, 255)
+
+    white_rgb = white_bgr[..., ::-1]
+    pil_masked = Image.fromarray(white_rgb).convert("RGB")
+    return pil_masked, white_rgb
+
+
+def _fashionclip_get_model(clip_device: str):
+    dev = torch.device(clip_device)
+
+    if (
+        _FC_CACHE["processor"] is None
+        or _FC_CACHE["model"] is None
+        or _FC_CACHE["device"] != clip_device
+    ):
+        clip_id = "patrickjohncyh/fashion-clip"
+        _FC_CACHE["processor"] = CLIPProcessor.from_pretrained(clip_id, use_fast=True)
+        _FC_CACHE["model"] = CLIPModel.from_pretrained(clip_id).to(dev)
+        _FC_CACHE["model"].eval()
+        _FC_CACHE["device"] = clip_device
+
+        # keep ref-cache used by your other function untouched, but neighbor eval
+        # uses its own emb-cache (_FC_EMB_CACHE)
+        _FC_CACHE["ref_path"] = None
+        _FC_CACHE["ref_emb"] = None
+
+    return _FC_CACHE["processor"], _FC_CACHE["model"], dev
+
+
+def _fashionclip_embed_pil(pil_img: Image.Image, clip_device: str) -> torch.Tensor:
+    processor, model, dev = _fashionclip_get_model(clip_device)
+
+    inputs = processor(images=pil_img, return_tensors="pt")
+    inputs = {k: v.to(dev) for k, v in inputs.items()}
+
+    with torch.inference_mode():
+        out = model.get_image_features(pixel_values=inputs["pixel_values"])
+
+    if isinstance(out, torch.Tensor):
+        feats = out
+    elif hasattr(out, "image_embeds") and out.image_embeds is not None:
+        feats = out.image_embeds
+    elif hasattr(out, "pooler_output") and out.pooler_output is not None:
+        feats = out.pooler_output
+    elif hasattr(out, "last_hidden_state") and out.last_hidden_state is not None:
+        feats = out.last_hidden_state[:, 0, :]
+    else:
+        raise RuntimeError(f"Unexpected output type from get_image_features: {type(out)}")
+
+    feats = feats.float()
+    feats = feats / (feats.norm(dim=-1, keepdim=True) + 1e-12)
+    return feats.squeeze(0)
+
+
+def qwen_fashionclip_similarity_neighbor_masked_clothing(
+    person_img_a_path: str,
+    person_img_b_path: str,
+    flag: str,
+    estimator,
+    clip_device: str = "cpu",
+    return_masked_rgb: bool = False,
+) -> Tuple[float, Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Neighbor-to-neighbor cosine similarity between TWO PERSON images:
+    - segment clothing region in both images (upper/lower/dress logic)
+    - whiten everything outside clothing
+    - Fashion-CLIP embed both masked images
+    - cosine similarity
+
+    Returns:
+      sim: float
+      masked_a_rgb (optional) RGB uint8
+      masked_b_rgb (optional) RGB uint8
+    """
+    pil_a, masked_a_rgb = _mask_person_image_to_clothing_white_bg(
+        person_img_path=person_img_a_path,
+        flag=flag,
+        estimator=estimator,
+    )
+    pil_b, masked_b_rgb = _mask_person_image_to_clothing_white_bg(
+        person_img_path=person_img_b_path,
+        flag=flag,
+        estimator=estimator,
+    )
+
+    key_a = (str(Path(person_img_a_path).resolve()), flag.lower(), clip_device)
+    key_b = (str(Path(person_img_b_path).resolve()), flag.lower(), clip_device)
+
+    if key_a not in _FC_EMB_CACHE:
+        _FC_EMB_CACHE[key_a] = _fashionclip_embed_pil(pil_a, clip_device)
+    if key_b not in _FC_EMB_CACHE:
+        _FC_EMB_CACHE[key_b] = _fashionclip_embed_pil(pil_b, clip_device)
+
+    emb_a = _FC_EMB_CACHE[key_a]
+    emb_b = _FC_EMB_CACHE[key_b]
+
+    sim = float(torch.dot(emb_a, emb_b).detach().cpu().item())
+
+    if not return_masked_rgb:
+        return sim, None, None
+    return sim, masked_a_rgb, masked_b_rgb
+
 def qwen_arcface_similarity_input_vs_output(
     img1_path: str,
     img2_path: str,

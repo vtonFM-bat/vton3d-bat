@@ -12,6 +12,7 @@ dependencies = [
     "Pillow",
     "huggingface_hub",
     "transformers",
+    "peft",
     "einops",
     "safetensors",
     "jupyter",

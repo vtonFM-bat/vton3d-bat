@@ -255,6 +255,13 @@ def run_step_qwen_clothing(cfg: dict):
 
     qwen_cfg["source_dir"] = str(input_dir)
     qwen_cfg["output_dir"] = str(output_dir)
+    steps_cfg = cfg.get("pipeline", {}).get("steps", {}) or {}
+    use_n_1 = bool(qwen_cfg.get("use_n_1", False))
+
+    if steps_cfg.get("optical_flow", False) and use_n_1:
+        qwen_cfg["_masked_optical_flow"] = cfg.get("masked_optical_flow", {}) or {}
+    else:
+        qwen_cfg.pop("_masked_optical_flow", None)
 
     print(f"  -> Qwen input images: {input_dir}")
     print(f"  -> Qwen output directory: {output_dir}")
@@ -517,8 +524,12 @@ def run_pipeline(cfg: dict, base_scene_dir: Path):
     if steps_cfg["qwen"] is True:
         run_step_qwen_clothing(cfg)
 
-    if steps_cfg["optical_flow"] is True:
-        run_step_optical_flow_alignment(cfg)
+    if steps_cfg.get("optical_flow", False):
+        qwen_cfg = cfg.get("qwen", {}) or {}
+        use_n_1 = bool(qwen_cfg.get("use_n_1", False))
+
+        if (not steps_cfg.get("qwen", False)) or (steps_cfg.get("qwen", False) and not use_n_1):
+            run_step_optical_flow_alignment(cfg)
 
     if steps_cfg["background_segmentation"] is True:
         run_step_background_segmentation(cfg)

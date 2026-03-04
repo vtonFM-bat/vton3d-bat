@@ -14,3 +14,4 @@ Sapiens-Pytorch-Inference/models/
 models/
 **/.wandb_media_cache/
 **/wandb_media_cache/
+lora_train/data/

@@ -1,10 +1,10 @@
 paths:
-  scene_dir: "data/train/florian/"
+  scene_dir: "data/train/jan/"
   runs_root: "data/train/florian/sweep_runs"   # optional
 
 wandb:
-  project: "vton_test_prompts"
-  run_name: "vton_person_prompt1"
+  project: "vton_lora_exp"
+  run_name: "vton_no_lora"
   mode: "online"
 
 pipeline:
@@ -21,7 +21,7 @@ pipeline:
 
 extract_frames:
   videos_dir: "video"
-  video_name: "florian_shirt.MOV"        # optional: if not specified, process first video in videos_dir
+  video_name: "jan_fs.MOV"        # optional: if not specified, process first video in videos_dir
   num_frames: 30
   start: 0
   end: null
@@ -46,6 +46,11 @@ vggt:
 qwen:
   #qwen model
   model_path: "Qwen/Qwen-Image-Edit-2511"
+  use_lora: ""
+  lora_scale: 1.0
+
+  use_n_1: true
+
   clothing_image: "data/clothing/train/upper/short/shirts/white_plants_shirt.jpg"
   prompts:
     upper: "Replace ONLY the person's original shirt with the clothing image. Do not redesign or stylize the garment. The new garment must match the reference exactly: same colors, fabric texture, pattern/print, logos, seams/stitching, neckline/collar, sleeve length, fit, and hem/waist details. Keep background, pose, face, hair, skin, body shape, all other clothes of the person, lighting and camera exactly unchanged. Ensure temporal consistency. Produce clean boundaries where the new garment meets skin/other clothing; remove all remnants of the original shirt."
@@ -69,7 +74,7 @@ masked_optical_flow:
   sapiens_variant: "SEGMENTATION_1B"
   target_h: 1248
   target_w: 704
-  dilate_px: 15
+  dilate_px: 17
   feather_sigma: 7.0
   ecc_n_iter: 400
   ecc_eps: 1e-7

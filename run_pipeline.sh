@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH -p h200
-#SBATCH --job-name=vton_prompt_engi
+#SBATCH --job-name=vton_lora_exp
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --time=2:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=74G
+#SBATCH --mem=105G
 
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 
