@@ -1,5 +1,7 @@
-# vton3d-bat
-Main Repo for Virtual Try-On Pipeline
+# Combining 2D Flow Matching and Gaussian Splatting for 3D Virtual Try-on
+
+This repository contains the code, experiments, and supplementary material for our bachelor's thesis on combining 2D flow matching and Gaussian splatting for 3D virtual try-on.
+
 
 ## Main usage
 ```
@@ -69,7 +71,7 @@ Quick overview of the folders and files
 
 - `configs/`
   - `vton_pipeline.yaml` — main configuration for the pipeline (all needed paramters for VGGT, Qwen, OpticalFlow, GSplat, etc.).
-  - `sweeps/` — sweep configs (e.g. `vggt_sweep.yaml`).
+  - `sweeps/` — sweep configs (example: `vggt_sweep.yaml`).
 - `data/`
   - `clothing/` — reference clothing images (organized by category).
     - `train/dress/`, — dress image.
@@ -95,8 +97,11 @@ Quick overview of the folders and files
 
 - `scripts/` — scripts.
 
-- `vton3d/` — main Python package for the pipeline with subpackages
-  - `pipeline/` — main pipeline code, (run_pipeline.py, rungsplat.py; for wandb sweeps use run_sweep.py).
+- `vton3d/` — main Python package for the pipeline with subpackages.
+  - `pipeline/` — main pipeline code.
+    - `run_pipeline.py` — main script to run the pipeline.
+    - `run_gsplat.py` — script to run Gaussian Splatting.
+    - `run_sweep.py` — script to run wandb sweeps.
   - `qwen/` — code related to run QWEN.
   - `vggt/` — code related to run VGGT.
   - `utils/` — utility functions 
